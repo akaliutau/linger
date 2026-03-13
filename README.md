@@ -1,10 +1,8 @@
 # Linger
-
-### Give the things 2nd life
-=========================
+### Give the Things 2nd Life
 
 <p>
- <a><img alt="Status" src="https://img.shields.io/badge/status-research_prototype-6a5acd"></a>
+ <a><img alt="Status" src="https://img.shields.io/badge/status-mvp-orange"></a>
  <a><img alt="Python" src="https://img.shields.io/badge/Python-3.12%2B-blue"></a>
  <a><img alt="License" src="https://img.shields.io/badge/license-MIT-lightgrey"></a>
 </p>
