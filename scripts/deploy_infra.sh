@@ -14,7 +14,7 @@ gcloud config set project $PROJECT_ID
 
 echo "Enabling APIs..."
 gcloud services enable aiplatform.googleapis.com compute.googleapis.com logging.googleapis.com cloudquotas.googleapis.com \
-       cloudresourcemanager.googleapis.com iam.googleapis.com
+       cloudresourcemanager.googleapis.com iam.googleapis.com texttospeech.googleapis.com
 
 
 # ==========================================
@@ -25,6 +25,8 @@ gcloud iam service-accounts create $SA_NAME \
     --description="Service Account for Aethelgard MedGemma endpoints" \
     --display-name="Aethelgard Vertex SA"
 
+# create ops are async, wait for eventual update
+sleep 5
 # ==========================================
 # 2. Grant Necessary Roles
 # ==========================================

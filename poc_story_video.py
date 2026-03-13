@@ -28,23 +28,15 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import dotenv
 from PIL import Image
-from moviepy import (
-    AudioFileClip,
-    ColorClip,
-    CompositeVideoClip,
-    ImageClip,
-    TextClip,
-    VideoFileClip,
-    concatenate_videoclips,
-)
+from moviepy import AudioFileClip, ColorClip, CompositeVideoClip, ImageClip, VideoFileClip, concatenate_videoclips
 
 from google import genai
-from google.genai import types
 from google.cloud import texttospeech
+from google.genai import types
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".webm"}
-DEFAULT_SIZE = (1280, 720)
+DEFAULT_SIZE = (720, 1280)
 
 
 @dataclass
@@ -84,6 +76,10 @@ class RunLogger:
 # ---------- General helpers ----------
 
 
+def debug(msg: str) -> None:
+    print(f"[debug] {msg}")
+
+
 def read_text(path: Optional[Path]) -> str:
     if not path:
         return ""
@@ -110,20 +106,39 @@ def guess_mime(path: Path) -> str:
     return "application/octet-stream"
 
 
-def media_part_from_file(path: Path) -> Any:
+def format_bytes(num_bytes: int) -> str:
+    units = ["B", "KB", "MB", "GB"]
+    value = float(num_bytes)
+    unit_index = 0
+    while value >= 1024.0 and unit_index < len(units) - 1:
+        value /= 1024.0
+        unit_index += 1
+    return f"{value:.2f} {units[unit_index]}"
+
+
+def file_size_bytes(path: Path) -> int:
+    return path.stat().st_size
+
+
+def media_part_from_file(path: Path) -> types.Part:
     mime_type = guess_mime(path)
     return types.Part.from_bytes(data=path.read_bytes(), mime_type=mime_type)
 
 
-def srt_time(seconds: float) -> str:
-    millis = int(round(seconds * 1000))
-    hh = millis // 3_600_000
-    millis %= 3_600_000
-    mm = millis // 60_000
-    millis %= 60_000
-    ss = millis // 1000
-    millis %= 1000
-    return f"{hh:02d}:{mm:02d}:{ss:02d},{millis:03d}"
+def approx_payload_bytes(prompt: str, media_paths: Optional[List[Path]] = None) -> int:
+    total = len(prompt.encode("utf-8"))
+    for media_path in media_paths or []:
+        total += file_size_bytes(media_path)
+    return total
+
+
+def aspect_ratio_for_size(size: Tuple[int, int]) -> str:
+    width, height = size
+    if width == height:
+        return "1:1"
+    if height > width:
+        return "9:16"
+    return "16:9"
 
 
 # ---------- Client ----------
@@ -135,6 +150,7 @@ def make_genai_client(project: Optional[str], location: str) -> Any:
     }
     if project:
         kwargs.update({"vertexai": True, "project": project, "location": location})
+    debug(f"Creating GenAI client. project={project or '<env/default>'}, location={location}")
     return genai.Client(**kwargs)
 
 
@@ -143,6 +159,7 @@ def make_genai_client(project: Optional[str], location: str) -> Any:
 
 def discover_media(media_dir: Path) -> List[MediaAsset]:
     assets: List[MediaAsset] = []
+    debug(f"Scanning media directory: {media_dir}")
     for index, path in enumerate(sorted(p for p in media_dir.rglob("*") if p.is_file())):
         suffix = path.suffix.lower()
         if suffix not in IMAGE_EXTS | VIDEO_EXTS:
@@ -150,16 +167,15 @@ def discover_media(media_dir: Path) -> List[MediaAsset]:
         if suffix in IMAGE_EXTS:
             with Image.open(path) as img:
                 width, height = img.size
-            assets.append(
-                MediaAsset(
-                    file_id=f"asset_{index+1:02d}",
-                    path=str(path),
-                    kind="image",
-                    mime_type=guess_mime(path),
-                    width=width,
-                    height=height,
-                )
+            asset = MediaAsset(
+                file_id=f"asset_{index + 1:02d}",
+                path=str(path),
+                kind="image",
+                mime_type=guess_mime(path),
+                width=width,
+                height=height,
             )
+            assets.append(asset)
         else:
             clip = VideoFileClip(str(path))
             try:
@@ -167,17 +183,23 @@ def discover_media(media_dir: Path) -> List[MediaAsset]:
                 duration_sec = float(clip.duration)
             finally:
                 clip.close()
-            assets.append(
-                MediaAsset(
-                    file_id=f"asset_{index+1:02d}",
-                    path=str(path),
-                    kind="video",
-                    mime_type=guess_mime(path),
-                    width=int(width),
-                    height=int(height),
-                    duration_sec=duration_sec,
-                )
+            asset = MediaAsset(
+                file_id=f"asset_{index + 1:02d}",
+                path=str(path),
+                kind="video",
+                mime_type=guess_mime(path),
+                width=int(width),
+                height=int(height),
+                duration_sec=duration_sec,
             )
+            assets.append(asset)
+
+        debug(
+            "Discovered "
+            f"{asset.file_id}: {Path(asset.path).name} | {asset.kind} | {asset.width}x{asset.height}"
+            + (f" | {asset.duration_sec:.2f}s" if asset.duration_sec is not None else "")
+            + f" | {format_bytes(file_size_bytes(Path(asset.path)))}"
+        )
     return assets
 
 
@@ -278,7 +300,6 @@ STORYBOARD_SCHEMA: Dict[str, Any] = {
                             "pan_right",
                         ],
                     },
-                    "subtitle": {"type": "STRING"},
                     "narration": {"type": "STRING"},
                     "image_prompt": {"type": "STRING"},
                 },
@@ -289,7 +310,6 @@ STORYBOARD_SCHEMA: Dict[str, Any] = {
                     "asset_ref",
                     "purpose",
                     "camera_motion",
-                    "subtitle",
                     "narration",
                     "image_prompt",
                 ],
@@ -327,8 +347,7 @@ def generate_json(
     model: str,
     prompt: str,
     schema: Dict[str, Any],
-    media_parts: Optional[List[Any]] = None,
-    temperature: float = 0.3,
+    media_parts: Optional[List[types.Part]] = None,
 ) -> Dict[str, Any]:
     contents: List[Any] = [prompt]
     if media_parts:
@@ -338,7 +357,7 @@ def generate_json(
         model=model,
         contents=contents,
         config={
-            "temperature": temperature,
+            "temperature": 0.3,
             "response_mime_type": "application/json",
             "response_schema": schema,
         },
@@ -357,9 +376,10 @@ def interpret_images(
     results: List[Dict[str, Any]] = []
     for asset in image_assets:
         started = time.time()
+        asset_path = Path(asset.path)
         prompt = textwrap.dedent(
             f"""
-            You are evaluating a user-provided image for a 15-second AI-generated video story.
+            You are evaluating a user-provided image for a short AI-generated video story.
             The product brief is below.
 
             Brief:
@@ -374,21 +394,30 @@ def interpret_images(
             - whether this is better as an establishing shot, detail shot, or reveal shot
             """
         ).strip()
+        debug(
+            f"Interpreting image {asset.file_id} ({asset_path.name}) | "
+            f"file={format_bytes(file_size_bytes(asset_path))} | "
+            f"prompt_chars={len(prompt)} | approx_payload={format_bytes(approx_payload_bytes(prompt, [asset_path]))}"
+        )
         payload = generate_json(
             client=client,
             model=model,
             prompt=prompt,
             schema=image_interpretation_schema(),
-            media_parts=[media_part_from_file(Path(asset.path))],
-            temperature=0.2,
+            media_parts=[media_part_from_file(asset_path)],
         )
         payload["file_id"] = asset.file_id
         payload["path"] = asset.path
         results.append(payload)
         logger.record_step(
-            name=f"interpret_{Path(asset.path).name}",
+            name=f"interpret_{asset_path.name}",
             started=started,
-            extra={"model": model},
+            extra={
+                "model": model,
+                "input_file": asset_path.name,
+                "input_bytes": file_size_bytes(asset_path),
+                "prompt_chars": len(prompt),
+            },
         )
     dump_json(out_dir / "image_interpretations.json", results)
     return results
@@ -405,7 +434,7 @@ def brainstorm_ideas(
     started = time.time()
     prompt = textwrap.dedent(
         f"""
-        You are a creative director designing a cinematic-quality 15-second video story.
+        You are a creative director designing a cinematic-quality 30-second vertical video story.
 
         Project brief:
         {brief or 'No extra brief provided.'}
@@ -417,14 +446,22 @@ def brainstorm_ideas(
         Constraints:
         - ideas must be visually clean and plausible, not nonsense
         - cheap to compose from existing photos, existing short clips, and a few AI-generated frames
-        - avoid requiring a full 15-second generative video
+        - avoid requiring a full 30-second generative video
         - maximize emotional clarity and the 'beyond text' feel
         - pick one best idea for the PoC
         """
     ).strip()
-    ideas = generate_json(client, model, prompt, IDEAS_SCHEMA, temperature=0.7)
+    debug(
+        f"Brainstorming ideas | prompt_chars={len(prompt)} | "
+        f"approx_payload={format_bytes(approx_payload_bytes(prompt))}"
+    )
+    ideas = generate_json(client, model, prompt, IDEAS_SCHEMA)
     dump_json(out_dir / "ideas.json", ideas)
-    logger.record_step("brainstorm_ideas", started, {"model": model})
+    logger.record_step(
+        "brainstorm_ideas",
+        started,
+        {"model": model, "prompt_chars": len(prompt), "ideas_count": len(ideas.get("ideas", []))},
+    )
     return ideas
 
 
@@ -443,7 +480,7 @@ def plan_storyboard(
     asset_manifest = [asset.__dict__ for asset in assets]
     prompt = textwrap.dedent(
         f"""
-        Create a tight, competition-quality 15-second storyboard for a multimodal video story.
+        Create a tight, competition-quality {target_duration_sec}-second storyboard for a multimodal video story.
 
         Brief:
         {brief or 'No extra brief provided.'}
@@ -462,17 +499,24 @@ def plan_storyboard(
         - 4 to 6 scenes
         - prefer existing assets when possible
         - use generated_image only for scenes that truly need it
-        - narration should fit a 15-second voiceover, so keep it concise
-        - subtitles must be short and readable
+        - narration should fit a {target_duration_sec}-second voiceover, so keep it concise
         - image_prompt must be production-ready and avoid text artifacts, watermark, gibberish, ugly anatomy, low detail
         - asset_ref must match a real file_id when asset_mode is existing_image or existing_clip
         - asset_ref can be an empty string for generated_image
         """
     ).strip()
-    story = generate_json(client, model, prompt, STORYBOARD_SCHEMA, temperature=0.5)
+    debug(
+        f"Planning storyboard | prompt_chars={len(prompt)} | "
+        f"approx_payload={format_bytes(approx_payload_bytes(prompt))}"
+    )
+    story = generate_json(client, model, prompt, STORYBOARD_SCHEMA)
     normalize_storyboard(story, assets, target_duration_sec)
     dump_json(out_dir / "storyboard.json", story)
-    logger.record_step("plan_storyboard", started, {"model": model})
+    logger.record_step(
+        "plan_storyboard",
+        started,
+        {"model": model, "prompt_chars": len(prompt), "scene_count": len(story.get("scenes", []))},
+    )
     return story
 
 
@@ -482,7 +526,6 @@ def normalize_storyboard(story: Dict[str, Any], assets: List[MediaAsset], target
     if not scenes:
         raise ValueError("Storyboard returned no scenes.")
 
-    # Repair invalid refs.
     first_image = next((a.file_id for a in assets if a.kind == "image"), "")
     first_video = next((a.file_id for a in assets if a.kind == "video"), "")
     for scene in scenes:
@@ -517,47 +560,66 @@ def generate_scene_images(
     out_dir: Path,
     logger: RunLogger,
     model: str,
+    size: Tuple[int, int],
 ) -> Dict[str, str]:
     scene_dir = ensure_dir(out_dir / "generated_images")
-    asset_lookup = {asset.file_id: asset for asset in assets}
     generated_paths: Dict[str, str] = {}
 
-    # Use up to two reference images for consistency if available.
     reference_images = [a for a in assets if a.kind == "image"][:2]
-    ref_parts = [media_part_from_file(Path(a.path)) for a in reference_images]
+    ref_paths = [Path(a.path) for a in reference_images]
+    ref_parts = [media_part_from_file(path) for path in ref_paths]
+    aspect_ratio = aspect_ratio_for_size(size)
+    debug(
+        f"Scene image generation configured for aspect_ratio={aspect_ratio} | "
+        f"references={[path.name for path in ref_paths]}"
+    )
 
     for scene in story["scenes"]:
         if scene["asset_mode"] != "generated_image":
             continue
         started = time.time()
         prompt = scene["image_prompt"]
+        debug(
+            f"Generating image for {scene['scene_id']} | prompt_chars={len(prompt)} | "
+            f"ref_count={len(ref_paths)} | ref_files={[path.name for path in ref_paths]} | "
+            f"approx_payload={format_bytes(approx_payload_bytes(prompt, ref_paths))}"
+        )
         response = client.models.generate_content(
             model=model,
             contents=[prompt, *ref_parts],
             config={
                 "response_modalities": ["TEXT", "IMAGE"],
-                "image_config": {"aspect_ratio": "16:9"},
+                "image_config": {"aspect_ratio": aspect_ratio},
             },
         )
         image_saved = False
         for index, part in enumerate(getattr(response, "parts", []) or []):
             if getattr(part, "inline_data", None):
                 img = part.as_image()
-                image_path = scene_dir / f"{scene['scene_id']}_{index+1}.png"
+                image_path = scene_dir / f"{scene['scene_id']}_{index + 1}.png"
                 img.save(image_path)
                 generated_paths[scene["scene_id"]] = str(image_path)
+                debug(f"Saved generated image for {scene['scene_id']} -> {image_path.name}")
                 image_saved = True
                 break
         if not image_saved:
-            # Fallback: duplicate the first image asset if the model returned text only.
             fallback_asset = reference_images[0] if reference_images else None
             if not fallback_asset:
                 raise RuntimeError("Image generation returned no image and there is no fallback reference image.")
             generated_paths[scene["scene_id"]] = fallback_asset.path
+            debug(
+                f"No image returned for {scene['scene_id']}; using fallback reference image {Path(fallback_asset.path).name}"
+            )
         logger.record_step(
             f"generate_image_{scene['scene_id']}",
             started,
-            {"model": model, "prompt": prompt[:120]},
+            {
+                "model": model,
+                "prompt": prompt[:160],
+                "prompt_chars": len(prompt),
+                "reference_files": [path.name for path in ref_paths],
+                "aspect_ratio": aspect_ratio,
+            },
         )
 
     dump_json(out_dir / "generated_image_map.json", generated_paths)
@@ -578,29 +640,37 @@ def judge_generated_images(
         if not image_path:
             continue
         started = time.time()
+        image_file = Path(image_path)
         prompt = textwrap.dedent(
             f"""
             Judge whether this generated frame is good enough for a competition demo.
             Scene purpose: {scene['purpose']}
             Intended prompt: {scene['image_prompt']}
-            Subtitle: {scene['subtitle']}
 
             Be strict about slop: gibberish text, ugly artifacts, unclear subject, muddy composition.
             Return JSON only.
             """
         ).strip()
+        debug(
+            f"Judging generated image for {scene['scene_id']} ({image_file.name}) | "
+            f"file={format_bytes(file_size_bytes(image_file))} | prompt_chars={len(prompt)} | "
+            f"approx_payload={format_bytes(approx_payload_bytes(prompt, [image_file]))}"
+        )
         qc = generate_json(
             client=client,
             model=model,
             prompt=prompt,
             schema=IMAGE_QC_SCHEMA,
-            media_parts=[media_part_from_file(Path(image_path))],
-            temperature=0.1,
+            media_parts=[media_part_from_file(image_file)],
         )
         qc["scene_id"] = scene["scene_id"]
         qc["path"] = image_path
         results.append(qc)
-        logger.record_step(f"judge_{scene['scene_id']}", started, {"model": model})
+        logger.record_step(
+            f"judge_{scene['scene_id']}",
+            started,
+            {"model": model, "input_file": image_file.name, "input_bytes": file_size_bytes(image_file)},
+        )
     dump_json(out_dir / "generated_image_qc.json", results)
     return results
 
@@ -620,18 +690,25 @@ def synthesize_tts(
     speaking_rate: float,
 ) -> None:
     client = texttospeech.TextToSpeechClient()
-    synthesis_input = texttospeech.SynthesisInput(text=text)
-    voice = texttospeech.VoiceSelectionParams(language_code="en-US", name=voice_name)
-    audio_config = texttospeech.AudioConfig(
-        audio_encoding=texttospeech.AudioEncoding.LINEAR16,
-        speaking_rate=speaking_rate,
+
+    synthesis_input = texttospeech.SynthesisInput()
+    synthesis_input.text = text
+
+    voice = texttospeech.VoiceSelectionParams()
+    voice.language_code = "en-US"
+    voice.name = voice_name
+
+    audio_config = texttospeech.AudioConfig()
+    audio_config.audio_encoding = texttospeech.AudioEncoding.LINEAR16
+    audio_config.speaking_rate = speaking_rate
+
+    debug(
+        f"Synthesizing TTS | voice={voice_name} | speaking_rate={speaking_rate} | "
+        f"text_chars={len(text)} | text_bytes={format_bytes(len(text.encode('utf-8')))}"
     )
-    response = client.synthesize_speech(
-        input=synthesis_input,
-        voice=voice,
-        audio_config=audio_config,
-    )
+    response = client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
     out_path.write_bytes(response.audio_content)
+    debug(f"Saved narration audio -> {out_path.name} ({format_bytes(file_size_bytes(out_path))})")
 
 
 # ---------- Rendering ----------
@@ -645,28 +722,6 @@ def cover_clip(clip: Any, size: Tuple[int, int]) -> Any:
     return clip.cropped(x_center=clip.w / 2, y_center=clip.h / 2, width=target_w, height=target_h)
 
 
-def make_text_overlay(text: str, duration: float, size: Tuple[int, int]) -> Any:
-    safe_text = (text or "").strip()
-    if not safe_text:
-        return None
-    return (
-        TextClip(
-            text=safe_text,
-            font_size=44,
-            size=(size[0] - 120, None),
-            color="white",
-            stroke_color="black",
-            stroke_width=2,
-            method="caption",
-            text_align="center",
-            transparent=True,
-            duration=duration,
-        )
-        .with_position(("center", size[1] - 180))
-        .with_duration(duration)
-    )
-
-
 def build_scene_clip(
     scene: Dict[str, Any],
     asset_path: str,
@@ -675,6 +730,11 @@ def build_scene_clip(
     duration = float(scene["duration_sec"])
     motion = scene.get("camera_motion", "none")
     suffix = Path(asset_path).suffix.lower()
+
+    debug(
+        f"Building scene {scene['scene_id']} | source={Path(asset_path).name} | mode={scene['asset_mode']} | "
+        f"duration={duration:.2f}s | motion={motion}"
+    )
 
     if suffix in VIDEO_EXTS:
         base = VideoFileClip(asset_path).without_audio()
@@ -697,20 +757,7 @@ def build_scene_clip(
         elif motion == "pan_right":
             clip = clip.with_position(lambda t: (40 * (t / max(duration, 0.01)), "center"))
 
-    overlay = make_text_overlay(scene.get("subtitle", ""), duration, size)
-    if overlay is None:
-        return clip.with_duration(duration)
-    return CompositeVideoClip([clip.with_duration(duration), overlay], size=size).with_duration(duration)
-
-
-def write_srt(story: Dict[str, Any], path: Path) -> None:
-    chunks: List[str] = []
-    for idx, scene in enumerate(story["scenes"], start=1):
-        start = float(scene["start_sec"])
-        end = start + float(scene["duration_sec"])
-        text = scene.get("subtitle") or scene.get("narration") or ""
-        chunks.append(f"{idx}\n{srt_time(start)} --> {srt_time(end)}\n{text}\n")
-    path.write_text("\n".join(chunks), encoding="utf-8")
+    return clip.with_duration(duration)
 
 
 def render_video(
@@ -736,6 +783,10 @@ def render_video(
 
     video_duration = float(video.duration)
     audio_duration = float(narration.duration)
+    debug(
+        f"Render prep | video_duration={video_duration:.2f}s | audio_duration={audio_duration:.2f}s | "
+        f"fps={fps} | size={size[0]}x{size[1]}"
+    )
     if audio_duration > video_duration:
         delta = audio_duration - video_duration
         last_scene = story["scenes"][-1]
@@ -744,10 +795,12 @@ def render_video(
             last_path = asset_lookup[last_scene["asset_ref"]].path
         extension = build_scene_clip({**last_scene, "duration_sec": delta}, last_path, size)
         video = concatenate_videoclips([video, extension], method="compose")
+        debug(f"Extended last scene by {delta:.2f}s to match narration audio")
 
     background = ColorClip(size=size, color=(0, 0, 0), duration=video.duration)
     final = CompositeVideoClip([background, video.with_position("center")], size=size).with_audio(narration)
     out_path = out_dir / "final_story.mp4"
+    debug(f"Writing final video -> {out_path} | codec=libx264 | audio_codec=aac")
     final.write_videofile(
         str(out_path),
         fps=fps,
@@ -762,6 +815,7 @@ def render_video(
     video.close()
     for clip in visual_clips:
         clip.close()
+    debug(f"Saved final video -> {out_path.name} ({format_bytes(file_size_bytes(out_path))})")
     return out_path
 
 
@@ -775,9 +829,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out-dir", default="output", help="Output directory.")
     parser.add_argument("--project", default=os.getenv("PROJECT_ID"), help="Google Cloud project id.")
     parser.add_argument("--location", default=os.getenv("REGION", "global"), help="Vertex AI location.")
-    parser.add_argument("--target-seconds", type=int, default=15, help="Target story duration.")
+    parser.add_argument("--target-seconds", type=int, default=30, help="Target story duration.")
     parser.add_argument("--fps", type=int, default=24, help="Video fps.")
-    parser.add_argument("--size", default="1280x720", help="Output size, e.g. 1280x720.")
+    parser.add_argument("--size", default="720x1280", help="Output size, e.g. 720x1280 for vertical video.")
     parser.add_argument("--understand-model", default="gemini-2.5-flash-lite")
     parser.add_argument("--brainstorm-model", default="gemini-2.5-flash")
     parser.add_argument("--story-model", default="gemini-2.5-flash")
@@ -798,6 +852,10 @@ def main() -> None:
     brief = read_text(Path(args.brief_file) if args.brief_file else None)
     logger = RunLogger(out_dir)
 
+    debug(f"Run config | target_seconds={args.target_seconds} | size={width}x{height} | fps={args.fps}")
+    if args.brief_file:
+        debug(f"Using brief file: {args.brief_file}")
+
     if not media_dir.exists():
         raise SystemExit(f"Media directory does not exist: {media_dir}")
 
@@ -805,10 +863,12 @@ def main() -> None:
     if not assets:
         raise SystemExit("No supported media found. Add at least one image to the media directory.")
     dump_json(out_dir / "media_inventory.json", [asset.__dict__ for asset in assets])
+    debug(f"Media inventory written -> {out_dir / 'media_inventory.json'}")
 
     client = make_genai_client(project=args.project, location=args.location)
 
     image_assets = [asset for asset in assets if asset.kind == "image"]
+    debug(f"Image assets: {[Path(asset.path).name for asset in image_assets]}")
     interpretations = interpret_images(
         client=client,
         image_assets=image_assets,
@@ -827,11 +887,11 @@ def main() -> None:
         logger=logger,
         model=args.brainstorm_model,
     )
-    print(f"{len(ideas)} ideas generated.")
+    print(f"{len(ideas.get('ideas', []))} ideas generated.")
 
     selected_idea_id = ideas.get("selected_idea_id", 1)
     chosen_idea = next((item for item in ideas["ideas"] if item["idea_id"] == selected_idea_id), ideas["ideas"][0])
-    print(f"{selected_idea_id} selected.")
+    print(f"Selected idea {selected_idea_id}: {chosen_idea.get('title', '<untitled>')}")
 
     story = plan_storyboard(
         client=client,
@@ -844,7 +904,12 @@ def main() -> None:
         logger=logger,
         model=args.story_model,
     )
-    print(f"sections of story generated: {story.keys()}")
+    print(f"Storyboard generated with {len(story.get('scenes', []))} scenes.")
+    for scene in story.get("scenes", []):
+        debug(
+            f"Scene {scene['scene_id']} | mode={scene['asset_mode']} | asset_ref={scene['asset_ref'] or '<generated>'} | "
+            f"duration={scene['duration_sec']}s"
+        )
 
     generated_paths = generate_scene_images(
         client=client,
@@ -853,7 +918,12 @@ def main() -> None:
         out_dir=out_dir,
         logger=logger,
         model=args.image_model,
+        size=size,
     )
+    if generated_paths:
+        debug(f"Generated image files: {[Path(path).name for path in generated_paths.values()]}")
+    else:
+        debug("No generated images were needed for this storyboard.")
 
     judge_generated_images(
         client=client,
@@ -867,7 +937,7 @@ def main() -> None:
     narration_text = build_full_narration(story)
     script = out_dir / "narration.txt"
     script.write_text(narration_text, encoding="utf-8")
-    print(f"narration written to {script}")
+    print(f"Narration written to {script}")
 
     tts_started = time.time()
     narration_path = out_dir / "narration.wav"
@@ -877,12 +947,13 @@ def main() -> None:
         voice_name=args.tts_voice,
         speaking_rate=args.tts_rate,
     )
-    logger.record_step("tts_narration", tts_started, {"voice": args.tts_voice})
+    logger.record_step(
+        "tts_narration",
+        tts_started,
+        {"voice": args.tts_voice, "text_chars": len(narration_text), "audio_file": narration_path.name},
+    )
 
-    write_srt(story, out_dir / "subtitles.srt")
-    print(f"subtitles written to {out_dir / 'subtitles.srt'}")
-
-    print(f"render engine started")
+    print("Render engine started")
     render_started = time.time()
     final_video = render_video(
         story=story,
@@ -893,8 +964,12 @@ def main() -> None:
         size=size,
         fps=args.fps,
     )
-    logger.record_step("render_video", render_started, {"output": str(final_video)})
-    print(f"rendering finished")
+    logger.record_step(
+        "render_video",
+        render_started,
+        {"output": str(final_video), "output_bytes": file_size_bytes(final_video)},
+    )
+    print("Rendering finished")
 
     summary = {
         "output_video": str(final_video),
