@@ -1,0 +1,164 @@
+# Linger PoC: 30-second multimodal story validator
+
+This is a **local-first Python PoC** for validating whether Google models can:
+
+1. **understand input photos**,
+2. **brainstorm meaningful ideas**,
+3. **generate good-enough story frames**,
+4. **produce narration**, and
+5. **assemble a 30-second video**.
+
+It is intentionally simple. The point is to validate prompts, output quality, and latency **before** building full agents.
+
+## What it does
+
+Input:
+- a folder of user media (`.jpg`, `.png`, `.webp`, optional short `.mp4` / `.mov` clips)
+- an optional text brief
+
+Pipeline:
+1. `gemini-2.5-flash-lite` interprets the input images.
+2. `gemini-2.5-flash` brainstorms 5 story concepts.
+3. `gemini-2.5-flash` creates a strict JSON storyboard for **30 seconds**.
+4. `gemini-2.5-flash-image` generates only the missing keyframes.
+5. `gemini-2.5-flash-lite` judges those generated images for slop / quality.
+6. Cloud TTS (`Chirp 3 HD`) generates narration.
+7. `moviepy` assembles a local MP4 with subtitles.
+
+Output:
+- `media_inventory.json`
+- `image_interpretations.json`
+- `ideas.json`
+- `storyboard.json`
+- `generated_image_qc.json`
+- `narration.wav`
+- `subtitles.srt`
+- `metrics.json`
+- `final_story.mp4`
+
+## Why this shape is good for your hackathon
+
+This matches the notes behind the project:
+- **do not over-agentize the PoC**
+- validate creativity and interleaved media first
+- keep costs low by using **existing photos + short clips + a few AI frames**, not a fully generated 30-second video
+
+## Setup
+
+### 1) Install system dependency
+
+MoviePy needs FFmpeg on your machine.
+
+- macOS: `brew install ffmpeg`
+- Ubuntu/Debian: `sudo apt-get install ffmpeg`
+- Windows: install FFmpeg and add it to `PATH`
+
+### 2) Create a venv and install Python deps
+
+```bash
+python -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### 3) Authenticate to Google Cloud
+
+Use Vertex AI + Cloud TTS with ADC:
+
+```bash
+gcloud auth application-default login
+export GOOGLE_GENAI_USE_VERTEXAI=True
+export GOOGLE_CLOUD_PROJECT=YOUR_PROJECT_ID
+export GOOGLE_CLOUD_LOCATION=global
+```
+
+Also enable:
+- Vertex AI API
+- Cloud Text-to-Speech API
+
+### 4) Prepare inputs
+
+Example:
+
+```text
+inputs/
+  object.jpg
+  room.jpg
+  detail.jpg
+  reveal_clip.mp4
+brief.txt
+```
+
+### 5) Run
+
+```bash
+python poc_story_video.py \
+  --media-dir ./inputs \
+  --brief-file ./brief.txt \
+  --out-dir ./out
+```
+
+## Cheap mode vs richer mode
+
+### Cheapest good mode
+Use:
+- existing photos for setup and reveal
+- existing short clips for motion beats
+- 2 to 3 generated images only
+- Cloud TTS for narration
+- local composition in MoviePy
+
+That is the best tradeoff for the competition.
+
+### Richer mode later
+Add one **single** Veo shot for the hero moment and keep the rest deterministic.
+
+I would not try to generate the entire 30-second video with Veo.
+
+## Recommended media strategy
+
+For a 30-second story, a very good cheap structure is:
+- Scene 1: existing room photo
+- Scene 2: existing object close-up
+- Scene 3: generated concept frame
+- Scene 4: existing short AI clip or shot
+- Scene 5: generated reveal frame
+- Scene 6: existing final room photo / reveal clip
+
+## Prompting notes
+
+The script is designed around three separate validations:
+
+### A. Can the model interpret the input?
+Saved in `image_interpretations.json`
+
+### B. Can the model come up with ideas that are actually worth rendering?
+Saved in `ideas.json`
+
+### C. Can the model generate a coherent 30-second story plan?
+Saved in `storyboard.json`
+
+This separation is important because otherwise you do not know whether a bad result came from:
+- weak media understanding,
+- weak story planning, or
+- weak image generation.
+
+## Latency notes
+
+Every major step is timed and saved in `metrics.json`.
+
+This lets you compare, for example:
+- `gemini-2.5-flash-lite` for understanding
+- `gemini-2.5-flash` for story quality
+- image generation latency per frame
+- TTS latency
+- local render latency
+
+## Suggested next step after this PoC
+
+If the outputs look strong, the next layer should be:
+- thin realtime Scout flow with Gemini Live API
+- deterministic orchestration for media generation / rendering
+- Cloud Run + GCS + Firestore for hosted judging/demo proof
+
+Not a giant multi-agent system on day one.

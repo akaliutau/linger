@@ -1,0 +1,14 @@
+# Main
+google-genai>=1.51.0
+google-cloud-texttospeech>=2.28.0
+moviepy>=2.1.2
+Pillow>=10.4.0
+imageio-ffmpeg>=0.5.1
+
+# === Utilities ===
+python-dotenv>=1.0
+colorlog==6.10.1
+
+# === Testing ===
+pytest>=8.0
+
