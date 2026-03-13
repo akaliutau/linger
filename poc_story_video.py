@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import dotenv
 from PIL import Image
 from moviepy import (
     AudioFileClip,
@@ -37,11 +38,9 @@ from moviepy import (
     concatenate_videoclips,
 )
 
-
 from google import genai
 from google.genai import types
 from google.cloud import texttospeech
-
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".webm"}
@@ -360,7 +359,7 @@ def interpret_images(
         started = time.time()
         prompt = textwrap.dedent(
             f"""
-            You are evaluating a user-provided image for a 30-second AI-generated video story.
+            You are evaluating a user-provided image for a 15-second AI-generated video story.
             The product brief is below.
 
             Brief:
@@ -406,7 +405,7 @@ def brainstorm_ideas(
     started = time.time()
     prompt = textwrap.dedent(
         f"""
-        You are a creative director designing a competition-quality 30-second video story.
+        You are a creative director designing a cinematic-quality 15-second video story.
 
         Project brief:
         {brief or 'No extra brief provided.'}
@@ -418,7 +417,7 @@ def brainstorm_ideas(
         Constraints:
         - ideas must be visually clean and plausible, not nonsense
         - cheap to compose from existing photos, existing short clips, and a few AI-generated frames
-        - avoid requiring a full 30-second generative video
+        - avoid requiring a full 15-second generative video
         - maximize emotional clarity and the 'beyond text' feel
         - pick one best idea for the PoC
         """
@@ -444,7 +443,7 @@ def plan_storyboard(
     asset_manifest = [asset.__dict__ for asset in assets]
     prompt = textwrap.dedent(
         f"""
-        Create a tight, competition-quality 30-second storyboard for a multimodal video story.
+        Create a tight, competition-quality 15-second storyboard for a multimodal video story.
 
         Brief:
         {brief or 'No extra brief provided.'}
@@ -463,7 +462,7 @@ def plan_storyboard(
         - 4 to 6 scenes
         - prefer existing assets when possible
         - use generated_image only for scenes that truly need it
-        - narration should fit a 30-second voiceover, so keep it concise
+        - narration should fit a 15-second voiceover, so keep it concise
         - subtitles must be short and readable
         - image_prompt must be production-ready and avoid text artifacts, watermark, gibberish, ugly anatomy, low detail
         - asset_ref must match a real file_id when asset_mode is existing_image or existing_clip
@@ -771,12 +770,12 @@ def render_video(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Validate a local multimodal 30-second story PoC on Google Cloud.")
-    parser.add_argument("--media-dir", required=True, help="Directory with input photos and optional short clips.")
+    parser.add_argument("--input", required=True, help="Directory with input photos and optional short clips.")
     parser.add_argument("--brief-file", help="Optional .txt file with the project or story brief.")
-    parser.add_argument("--out-dir", default="out", help="Output directory.")
+    parser.add_argument("--out-dir", default="output", help="Output directory.")
     parser.add_argument("--project", default=os.getenv("PROJECT_ID"), help="Google Cloud project id.")
     parser.add_argument("--location", default=os.getenv("REGION", "global"), help="Vertex AI location.")
-    parser.add_argument("--target-seconds", type=int, default=30, help="Target story duration.")
+    parser.add_argument("--target-seconds", type=int, default=15, help="Target story duration.")
     parser.add_argument("--fps", type=int, default=24, help="Video fps.")
     parser.add_argument("--size", default="1280x720", help="Output size, e.g. 1280x720.")
     parser.add_argument("--understand-model", default="gemini-2.5-flash-lite")
@@ -794,7 +793,7 @@ def main() -> None:
     width, height = [int(x) for x in args.size.lower().split("x", 1)]
     size = (width, height)
 
-    media_dir = Path(args.media_dir)
+    media_dir = Path(args.input)
     out_dir = ensure_dir(Path(args.out_dir))
     brief = read_text(Path(args.brief_file) if args.brief_file else None)
     logger = RunLogger(out_dir)
@@ -818,6 +817,7 @@ def main() -> None:
         logger=logger,
         model=args.understand_model,
     )
+    print(f"{len(interpretations)} images interpreted.")
 
     ideas = brainstorm_ideas(
         client=client,
@@ -827,8 +827,11 @@ def main() -> None:
         logger=logger,
         model=args.brainstorm_model,
     )
+    print(f"{len(ideas)} ideas generated.")
+
     selected_idea_id = ideas.get("selected_idea_id", 1)
     chosen_idea = next((item for item in ideas["ideas"] if item["idea_id"] == selected_idea_id), ideas["ideas"][0])
+    print(f"{selected_idea_id} selected.")
 
     story = plan_storyboard(
         client=client,
@@ -841,6 +844,7 @@ def main() -> None:
         logger=logger,
         model=args.story_model,
     )
+    print(f"sections of story generated: {story.keys()}")
 
     generated_paths = generate_scene_images(
         client=client,
@@ -861,7 +865,9 @@ def main() -> None:
     )
 
     narration_text = build_full_narration(story)
-    (out_dir / "narration.txt").write_text(narration_text, encoding="utf-8")
+    script = out_dir / "narration.txt"
+    script.write_text(narration_text, encoding="utf-8")
+    print(f"narration written to {script}")
 
     tts_started = time.time()
     narration_path = out_dir / "narration.wav"
@@ -874,7 +880,9 @@ def main() -> None:
     logger.record_step("tts_narration", tts_started, {"voice": args.tts_voice})
 
     write_srt(story, out_dir / "subtitles.srt")
+    print(f"subtitles written to {out_dir / 'subtitles.srt'}")
 
+    print(f"render engine started")
     render_started = time.time()
     final_video = render_video(
         story=story,
@@ -886,6 +894,7 @@ def main() -> None:
         fps=args.fps,
     )
     logger.record_step("render_video", render_started, {"output": str(final_video)})
+    print(f"rendering finished")
 
     summary = {
         "output_video": str(final_video),
@@ -903,6 +912,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     try:
+        dotenv.load_dotenv()
         main()
     except KeyboardInterrupt:
         print("Interrupted.", file=sys.stderr)
