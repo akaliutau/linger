@@ -17,9 +17,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import dotenv
-from fastapi import FastAPI, File, Form, HTTPException, WebSocket, WebSocketDisconnect, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, WebSocket, WebSocketDisconnect, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 try:
     from google import genai
     from google.genai import types
@@ -87,10 +88,69 @@ GUIDE_TTS_ENDPOINT = os.getenv("CLOUD_TTS_ENDPOINT", "")
 AUTO_STOP_KEEP_COUNT = int(os.getenv("AUTO_STOP_KEEP_COUNT", "4"))
 AUTO_STOP_BEST_SCORE = int(os.getenv("AUTO_STOP_BEST_SCORE", "90"))
 AUTO_STOP_MAX_FRAMES = int(os.getenv("AUTO_STOP_MAX_FRAMES", "24"))
+MODEL_TIMEOUT_SEC = int(os.getenv("MODEL_TIMEOUT_SEC", "30"))
+DEBUG_EVENT_LIMIT = int(os.getenv("DEBUG_EVENT_LIMIT", "200"))
+REACT_DIST_DIR_ENV = os.getenv("REACT_DIST_DIR", "")
+
+
+def resolve_react_dist_dir() -> Optional[Path]:
+    candidates: List[Path] = []
+    if REACT_DIST_DIR_ENV:
+        candidates.append(Path(REACT_DIST_DIR_ENV))
+    candidates.extend(
+        [
+            BASE_DIR / "fe",
+            BASE_DIR / "dist",
+            BASE_DIR.parent / "linger_react_poc" / "dist",
+            BASE_DIR / "../linger_react_poc/dist",
+        ]
+    )
+    for candidate in candidates:
+        try:
+            candidate = candidate.resolve()
+        except Exception:
+            continue
+        if (candidate / "index.html").exists():
+            return candidate
+    return None
+
+
+REACT_DIST_DIR = resolve_react_dist_dir()
 
 app = FastAPI(title=APP_NAME)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 app.mount("/local_uploads", StaticFiles(directory=str(LOCAL_UPLOAD_DIR)), name="local_uploads")
+app.mount("/session_cache", StaticFiles(directory=str(CACHE_DIR)), name="session_cache")
+if REACT_DIST_DIR and (REACT_DIST_DIR / "assets").exists():
+    app.mount("/assets", StaticFiles(directory=str(REACT_DIST_DIR / "assets")), name="react_assets")
+
+
+@app.middleware("http")
+async def request_logging_middleware(request: Request, call_next):
+    request_id = uuid.uuid4().hex[:8]
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        json_log(
+            "http_error",
+            request_id=request_id,
+            method=request.method,
+            path=request.url.path,
+            error=str(exc),
+            latency_ms=round((time.perf_counter() - started) * 1000),
+        )
+        raise
+    response.headers["x-request-id"] = request_id
+    json_log(
+        "http_request",
+        request_id=request_id,
+        method=request.method,
+        path=request.url.path,
+        status_code=response.status_code,
+        latency_ms=round((time.perf_counter() - started) * 1000),
+    )
+    return response
 
 
 # ---------- helpers ----------
@@ -110,8 +170,15 @@ def slugify(value: str) -> str:
     return value.strip("-") or "session"
 
 
+DEBUG_EVENTS: List[Dict[str, Any]] = []
+
+
 def json_log(event_type: str, **payload: Any) -> None:
-    print(json.dumps({"ts": utc_iso(), "event_type": event_type, **payload}, ensure_ascii=False), flush=True)
+    event = {"ts": utc_iso(), "event_type": event_type, **payload}
+    DEBUG_EVENTS.append(event)
+    if len(DEBUG_EVENTS) > DEBUG_EVENT_LIMIT:
+        del DEBUG_EVENTS[:-DEBUG_EVENT_LIMIT]
+    print(json.dumps(event, ensure_ascii=False), flush=True)
 
 
 def ensure_dir(path: Path) -> Path:
@@ -529,6 +596,7 @@ class SessionStore:
                     },
                     "best_frames": [],
                     "recent_events": [],
+                    "story_seed": None,
                     "finalized": None,
                     "debug": {},
                 }
@@ -582,6 +650,92 @@ def part_size_bytes(part: Any) -> int:
     if isinstance(data, str):
         return len(data.encode("utf-8"))
     return len(data)
+
+
+def stage1_fallback(note: str = "") -> Dict[str, Any]:
+    note_hint = (note or "").strip()
+    return {
+        "object_label": "Story seed",
+        "one_line_summary": "A clean hero frame ready for a short vertical story.",
+        "story_signal": note_hint[:120] if note_hint else "Use this place as the anchor and gather a few strong supporting moments.",
+        "why_it_is_visually_workable": "The image can anchor a simple mobile-first sequence built from one hero frame and a few context shots.",
+        "things_to_avoid": ["blur", "cluttered edges", "flat light"],
+        "live_capture_goals": ["one tight detail", "one wider context frame", "one cleaner backup hero"],
+        "best_angles": ["slightly closer", "clean vertical center", "gentle side angle"],
+        "opening_coach_line": "Start with one clean frame, then vary the distance.",
+        "quality_score_1_to_10": 6,
+        "_fallback": True,
+    }
+
+
+def quick_frame_fallback(frame_bytes: bytes, width: int, height: int) -> Dict[str, Any]:
+    image = Image.open(io.BytesIO(frame_bytes))
+    try:
+        gray = ImageOps.exif_transpose(image).convert("L")
+        tiny = gray.resize((64, 64), Image.Resampling.BILINEAR)
+        pixels = list(tiny.getdata())
+        mean = sum(pixels) / max(len(pixels), 1)
+        variance = sum((p - mean) ** 2 for p in pixels) / max(len(pixels), 1)
+        small = gray.resize((32, 32), Image.Resampling.BILINEAR)
+        sx = 0
+        sy = 0
+        for y in range(31):
+            for x in range(31):
+                p = small.getpixel((x, y))
+                sx += abs(p - small.getpixel((x + 1, y)))
+                sy += abs(p - small.getpixel((x, y + 1)))
+        edge = (sx + sy) / (31 * 31 * 2)
+    finally:
+        image.close()
+    brightness_score = max(0, 100 - int(abs(mean - 138) * 1.1))
+    sharpness_score = min(100, int(edge * 1.8 + variance * 0.03))
+    center_bonus = 8 if height >= width else 0
+    score = int(max(18, min(92, 0.45 * brightness_score + 0.45 * sharpness_score + center_bonus)))
+    keep = score >= max(68, MIN_KEEP_SCORE - 6)
+    if mean < 75:
+        micro = "Find brighter light. Hold steady."
+        label = "Dim frame"
+    elif sharpness_score < 40:
+        micro = "Hold still and lock the frame."
+        label = "Soft frame"
+    elif keep:
+        micro = "Nice. Take one close and one wider."
+        label = "Strong mobile frame"
+    else:
+        micro = "Simplify the edges and try again."
+        label = "Usable frame"
+    return {
+        "keep": keep,
+        "score_0_to_100": score,
+        "moment_label": label,
+        "cinematic_role": "context" if width <= height else "wide",
+        "why": "Fallback visual heuristic used after model issue.",
+        "micro_direction": micro[:60],
+        "best_future_use": "context cutaway" if keep else "skip",
+        "duplicate_likelihood_0_to_100": 40,
+        "_fallback": True,
+    }
+
+
+async def generate_json_safe(
+    *,
+    prompt: str,
+    schema: Dict[str, Any],
+    media_parts: Optional[List[Any]],
+    model: str,
+    temperature: float = 0.3,
+    fallback: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    try:
+        return await asyncio.wait_for(
+            run_in_threadpool(generate_json, prompt, schema, media_parts, model, temperature),
+            timeout=MODEL_TIMEOUT_SEC,
+        )
+    except Exception as exc:
+        json_log("model_fallback", model=model, error=str(exc), fallback=bool(fallback))
+        if fallback is not None:
+            return fallback
+        raise
 
 
 def generate_json(prompt: str, schema: Dict[str, Any], media_parts: Optional[List[Any]], model: str, temperature: float = 0.3) -> Dict[str, Any]:
@@ -723,18 +877,50 @@ async def maybe_live_reply(state: Dict[str, Any], user_text: str) -> str:
     return (response.text or "Hold steady and simplify the frame.").strip()
 
 
+def build_story_seed(state: Dict[str, Any]) -> Dict[str, Any]:
+    stage1 = (state.get("stage1") or {}).get("analysis") or {}
+    best_frames = state.get("best_frames") or []
+    top_labels = [frame.get("moment_label") for frame in best_frames[:3] if frame.get("moment_label")]
+    idea = stage1.get("story_signal") or "A compact vertical story built from the strongest moments in this place."
+    if top_labels:
+        idea = f"{idea} Best moments: {', '.join(top_labels[:3])}."
+    hero_local = (state.get("stage1") or {}).get("local_path")
+    hero_preview_url = None
+    if hero_local:
+        p = Path(hero_local)
+        hero_preview_url = f"/session_cache/{slugify(state['session_id'])}/stage1/{p.name}"
+    return {
+        "session_id": state["session_id"],
+        "title": stage1.get("object_label") or "Story seed",
+        "description": stage1.get("one_line_summary") or "A clean hero frame and a few supporting moments.",
+        "idea": idea,
+        "hero_preview_url": hero_preview_url,
+        "best_count": len(best_frames),
+        "created_at": utc_iso(),
+    }
+
+
 # ---------- html ----------
 
 
 @app.get("/", response_class=HTMLResponse)
 async def index() -> HTMLResponse:
+    index_path = (REACT_DIST_DIR / "index.html") if REACT_DIST_DIR else None
+    if index_path and index_path.exists():
+        return HTMLResponse(index_path.read_text(encoding="utf-8"))
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     return HTMLResponse(html)
 
 
 @app.get("/healthz")
 async def healthz() -> Dict[str, str]:
-    return {"status": "ok", "app": APP_NAME}
+    return {"status": "ok", "app": APP_NAME, "frontend": "react" if REACT_DIST_DIR else "legacy"}
+
+
+@app.get("/api/debug/events")
+async def api_debug_events(limit: int = 80) -> Dict[str, Any]:
+    limit = max(1, min(limit, DEBUG_EVENT_LIMIT))
+    return {"events": DEBUG_EVENTS[-limit:]}
 
 
 @app.post("/api/tts/guide")
@@ -769,6 +955,11 @@ async def api_config() -> Dict[str, Any]:
         "guide_tts_enabled": GUIDE_TTS_ENABLED and texttospeech is not None,
         "guide_tts_voice": GUIDE_TTS_VOICE_NAME,
         "video_pipeline_script": bool(VIDEO_PIPELINE_SCRIPT),
+        "react_dist": str(REACT_DIST_DIR) if REACT_DIST_DIR else None,
+        "model_timeout_sec": MODEL_TIMEOUT_SEC,
+        "auto_stop_keep_count": AUTO_STOP_KEEP_COUNT,
+        "auto_stop_best_score": AUTO_STOP_BEST_SCORE,
+        "auto_stop_max_frames": AUTO_STOP_MAX_FRAMES,
     }
 
 
@@ -800,15 +991,17 @@ async def api_stage1_analyze_photo(
     normalized_bytes, width, height = normalize_uploaded_image(file_bytes, max_dim=MAX_IMAGE_DIM)
     local_path = save_stage1_local(session_id, normalized_bytes)
     prompt = stage1_prompt(note)
-    analysis = generate_json(
+    analysis = await generate_json_safe(
         prompt=prompt,
         schema=STAGE1_SCHEMA,
         media_parts=[media_part_from_bytes(normalized_bytes)],
         model=STAGE1_MODEL,
         temperature=0.2,
+        fallback=stage1_fallback(note),
     )
 
-    upload = STORAGE.store_bytes(
+    upload = await run_in_threadpool(
+        STORAGE.store_bytes,
         prefix=f"captures/{session_id}/stage1",
         filename=local_path.name,
         data=normalized_bytes,
@@ -821,6 +1014,7 @@ async def api_stage1_analyze_photo(
             "created_at": utc_iso(),
         },
     )
+    local_preview_url = f"/session_cache/{session_id}/stage1/{local_path.name}"
     state["stage1"] = {
         "note": note,
         "analysis": analysis,
@@ -830,6 +1024,7 @@ async def api_stage1_analyze_photo(
         "original_width": orig_width,
         "original_height": orig_height,
         "size_bytes": len(normalized_bytes),
+        "local_preview_url": local_preview_url,
     }
     state["stage1_upload"] = upload.__dict__
     state["best_frames"] = []
@@ -839,6 +1034,7 @@ async def api_stage1_analyze_photo(
         "latency_ms_total": 0,
         "best_score": 0,
     }
+    state["story_seed"] = build_story_seed(state)
     STORE.persist(session_id)
     await ensure_live_agent(state)
 
@@ -851,7 +1047,7 @@ async def api_stage1_analyze_photo(
         uploaded_bytes=len(normalized_bytes),
         latency_ms=round((time.time() - started) * 1000),
     )
-    await STORE.broadcast(session_id, {"type": "stage1_ready", "analysis": analysis})
+    await STORE.broadcast(session_id, {"type": "stage1_ready", "analysis": analysis, "story_seed": state.get("story_seed")})
     return JSONResponse(
         {
             "ok": True,
@@ -859,6 +1055,8 @@ async def api_stage1_analyze_photo(
             "analysis": analysis,
             "upload": upload.__dict__,
             "local_path": str(local_path),
+            "local_preview_url": local_preview_url,
+            "story_seed": state.get("story_seed"),
             "latency_ms": round((time.time() - started) * 1000),
         }
     )
@@ -902,12 +1100,13 @@ async def api_live_frame(
     normalized_bytes, width, height = normalize_uploaded_image(raw, max_dim=FRAME_MAX_DIM)
     ahash_hex = f"{average_hash(normalized_bytes):016x}"
     prompt = frame_prompt(state["stage1"]["analysis"], note or state["stage1"].get("note", ""), state.get("best_frames", []))
-    analysis = generate_json(
+    analysis = await generate_json_safe(
         prompt=prompt,
         schema=FRAME_SCHEMA,
         media_parts=[media_part_from_bytes(normalized_bytes)],
         model=FRAME_MODEL,
         temperature=0.15,
+        fallback=quick_frame_fallback(normalized_bytes, width, height),
     )
     score = int(analysis.get("score_0_to_100", 0))
     keep_requested = bool(analysis.get("keep")) and score >= MIN_KEEP_SCORE
@@ -921,6 +1120,7 @@ async def api_live_frame(
         "size_bytes": len(normalized_bytes),
         "ahash": ahash_hex,
         "local_path": str(local_path),
+        "local_preview_url": f"/session_cache/{session_id}/best_frames/{local_path.name}",
         "preview_url": None,
     }
 
@@ -974,6 +1174,7 @@ async def api_live_frame(
     }
     state.setdefault("recent_events", []).append(recent_event)
     state["recent_events"] = state["recent_events"][-50:]
+    state["story_seed"] = build_story_seed(state)
     STORE.persist(session_id)
 
     json_log(
@@ -1022,6 +1223,35 @@ async def api_live_frame(
     )
 
 
+@app.post("/api/live/harvest/stop")
+async def api_live_harvest_stop(session_id: str = Form(...), reason: str = Form("manual")) -> Dict[str, Any]:
+    session_id = slugify(session_id)
+    state = STORE.get_or_create(session_id)
+    state.setdefault("recent_events", []).append({"type": "harvest_stop", "reason": reason, "ts": utc_iso()})
+    state["recent_events"] = state["recent_events"][-50:]
+    state["story_seed"] = build_story_seed(state)
+    STORE.persist(session_id)
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "reason": reason,
+        "kept_count": len(state.get("best_frames", [])),
+        "frames_seen": state.get("live_metrics", {}).get("frames_seen", 0),
+        "story_seed": state.get("story_seed"),
+    }
+
+
+@app.post("/api/story/seed")
+async def api_story_seed(session_id: str = Form(...)) -> Dict[str, Any]:
+    session_id = slugify(session_id)
+    state = STORE.get_or_create(session_id)
+    if not state.get("stage1"):
+        raise HTTPException(status_code=400, detail="Run stage 1 first")
+    state["story_seed"] = build_story_seed(state)
+    STORE.persist(session_id)
+    return {"ok": True, "session_id": session_id, "story_seed": state["story_seed"]}
+
+
 @app.post("/api/live/chat")
 async def api_live_chat(session_id: str = Form(...), message: str = Form(...)) -> Dict[str, Any]:
     session_id = slugify(session_id)
@@ -1040,6 +1270,8 @@ async def api_live_chat(session_id: str = Form(...), message: str = Form(...)) -
 @app.get("/api/session/{session_id}")
 async def api_session_state(session_id: str) -> Dict[str, Any]:
     state = STORE.get_or_create(slugify(session_id))
+    if state.get("stage1") and not state.get("story_seed"):
+        state["story_seed"] = build_story_seed(state)
     public = {k: v for k, v in state.items() if not k.startswith("_")}
     return public
 
@@ -1053,6 +1285,7 @@ async def api_session_finalize(session_id: str = Form(...), enough_moment: str =
     if not state.get("best_frames"):
         raise HTTPException(status_code=400, detail="No selected frames yet")
 
+    state["story_seed"] = build_story_seed(state)
     basket_assets: List[Dict[str, Any]] = []
     basket_prefix = f"captures/{session_id}/basket"
     export_root = export_dir(session_id)

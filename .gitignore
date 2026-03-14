@@ -210,3 +210,4 @@ __marimo__/
 notes.txt
 utils/printer.py
 .idea/
+*/node_modules/
