@@ -6,19 +6,46 @@ import io
 import json
 import os
 import re
+import hashlib
+import shlex
+import subprocess
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import dotenv
-from PIL import Image, ImageOps
 from fastapi import FastAPI, File, Form, HTTPException, WebSocket, WebSocketDisconnect, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from google.cloud import storage
-from google.genai import types
+try:
+    from google import genai
+    from google.genai import types
+    GENAI_IMPORT_ERROR: Optional[str] = None
+except Exception as exc:  # pragma: no cover
+    genai = None  # type: ignore[assignment]
+    types = None  # type: ignore[assignment]
+    GENAI_IMPORT_ERROR = str(exc)
+
+try:
+    from google.cloud import storage
+    STORAGE_IMPORT_ERROR: Optional[str] = None
+except Exception as exc:  # pragma: no cover
+    storage = None  # type: ignore[assignment]
+    STORAGE_IMPORT_ERROR = str(exc)
+
+try:
+    from google.cloud import texttospeech
+    TTS_IMPORT_ERROR: Optional[str] = None
+except Exception as exc:  # pragma: no cover
+    texttospeech = None  # type: ignore[assignment]
+    TTS_IMPORT_ERROR = str(exc)
+
+from PIL import Image, ImageOps
+from pydantic import BaseModel
+
 
 dotenv.load_dotenv()
 
@@ -26,9 +53,11 @@ APP_NAME = "Linger Live Capture"
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 CACHE_DIR = BASE_DIR / "session_cache"
-LOCAL_UPLOAD_DIR = BASE_DIR / "input"
+LOCAL_UPLOAD_DIR = BASE_DIR / "local_uploads"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 LOCAL_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+TTS_DIR = LOCAL_UPLOAD_DIR / "tts"
+TTS_DIR.mkdir(parents=True, exist_ok=True)
 
 PROJECT_ID = os.getenv("PROJECT_ID", "")
 BUCKET_NAME = os.getenv("BUCKET_NAME", "")
@@ -39,7 +68,7 @@ DEFAULT_STORAGE_MODE: Literal["auto", "gcs", "local"] = os.getenv("STORAGE_MODE"
 SIGNED_URL_EXPIRY_MIN = int(os.getenv("SIGNED_URL_EXPIRY_MIN", "1440"))
 MAX_IMAGE_DIM = int(os.getenv("MAX_IMAGE_DIM", "1600"))
 FRAME_MAX_DIM = int(os.getenv("FRAME_MAX_DIM", "1280"))
-JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "90"))
+JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "88"))
 STAGE1_MODEL = os.getenv("STAGE1_MODEL", "gemini-2.5-flash")
 FRAME_MODEL = os.getenv("FRAME_MODEL", "gemini-2.5-flash-lite")
 LIVE_TEXT_MODEL = os.getenv("LIVE_TEXT_MODEL", "gemini-2.0-flash-live-preview-04-09")
@@ -47,14 +76,25 @@ ENABLE_LIVE_AGENT = os.getenv("ENABLE_LIVE_AGENT", "true").lower() in {"1", "tru
 KEEP_BEST_LIMIT = int(os.getenv("KEEP_BEST_LIMIT", "10"))
 MIN_KEEP_SCORE = int(os.getenv("MIN_KEEP_SCORE", "74"))
 MAX_RECENT_UPLOADS = int(os.getenv("MAX_RECENT_UPLOADS", "24"))
-
+VIDEO_PIPELINE_SCRIPT = os.getenv("VIDEO_PIPELINE_SCRIPT", "")
+VIDEO_PIPELINE_BRIEF_FILE = os.getenv("VIDEO_PIPELINE_BRIEF_FILE", "")
+VIDEO_PIPELINE_EXTRA_ARGS = os.getenv("VIDEO_PIPELINE_EXTRA_ARGS", "")
 DEBUG_LOG_PROMPTS = os.getenv("DEBUG_LOG_PROMPTS", "true").lower() in {"1", "true", "yes", "on"}
+GUIDE_TTS_ENABLED = os.getenv("GUIDE_TTS_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+GUIDE_TTS_LANGUAGE_CODE = os.getenv("GUIDE_TTS_LANGUAGE_CODE", "en-US")
+GUIDE_TTS_VOICE_NAME = os.getenv("GUIDE_TTS_VOICE_NAME", "en-US-Chirp3-HD-Aoede")
+GUIDE_TTS_ENDPOINT = os.getenv("CLOUD_TTS_ENDPOINT", "")
+AUTO_STOP_KEEP_COUNT = int(os.getenv("AUTO_STOP_KEEP_COUNT", "4"))
+AUTO_STOP_BEST_SCORE = int(os.getenv("AUTO_STOP_BEST_SCORE", "90"))
+AUTO_STOP_MAX_FRAMES = int(os.getenv("AUTO_STOP_MAX_FRAMES", "24"))
 
 app = FastAPI(title=APP_NAME)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 app.mount("/local_uploads", StaticFiles(directory=str(LOCAL_UPLOAD_DIR)), name="local_uploads")
 
+
 # ---------- helpers ----------
+
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
@@ -162,35 +202,15 @@ def make_live_client(location: str) -> Any:
 
 SYNC_CLIENT: Any = None
 LIVE_CLIENT: Any = None
+TTS_CLIENT: Any = None
 
-from google import genai
 
-SYNC_CLIENT = None
-
-def create_sync_client():
-    project_id = os.environ["PROJECT_ID"]
-    location = os.environ.get("REGION", "global")
-    use_vertex = str(os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "true")).lower() == "true"
-
-    if not use_vertex:
-        raise RuntimeError("GOOGLE_GENAI_USE_VERTEXAI must be true for this app.")
-
-    client = genai.Client(
-        vertexai=True,
-        project=project_id,
-        location=location,
-    )
-    return client
-
-def get_sync_client():
+def get_sync_client() -> Any:
     global SYNC_CLIENT
     if SYNC_CLIENT is None:
-        SYNC_CLIENT = create_sync_client()
-        json_log(
-            "client_init_ok",
-            project=os.environ.get("PROJECT_ID"),
-            region=os.environ.get("REGION", "global"),
-        )
+        SYNC_CLIENT = make_sync_client(VERTEX_LOCATION)
+    if SYNC_CLIENT is None:
+        raise RuntimeError(f"google-genai is not available: {GENAI_IMPORT_ERROR}")
     return SYNC_CLIENT
 
 
@@ -198,7 +218,57 @@ def get_live_client() -> Any:
     global LIVE_CLIENT
     if LIVE_CLIENT is None:
         LIVE_CLIENT = make_live_client(LIVE_LOCATION)
+    if LIVE_CLIENT is None:
+        raise RuntimeError(f"google-genai is not available: {GENAI_IMPORT_ERROR}")
     return LIVE_CLIENT
+
+
+def make_tts_client() -> Any:
+    if texttospeech is None:
+        return None
+    kwargs: Dict[str, Any] = {}
+    if GUIDE_TTS_ENDPOINT:
+        endpoint = GUIDE_TTS_ENDPOINT.replace("https://", "").replace("http://", "")
+        kwargs["client_options"] = {"api_endpoint": endpoint}
+    return texttospeech.TextToSpeechClient(**kwargs)
+
+
+def get_tts_client() -> Any:
+    global TTS_CLIENT
+    if TTS_CLIENT is None:
+        TTS_CLIENT = make_tts_client()
+    if TTS_CLIENT is None:
+        raise RuntimeError(f"google-cloud-texttospeech is not available: {TTS_IMPORT_ERROR}")
+    return TTS_CLIENT
+
+
+def sanitize_guide_text(text: str) -> str:
+    clean = re.sub(r"\s+", " ", (text or "").strip())
+    return clean[:180]
+
+
+def synthesize_guide_audio(text: str) -> Optional[str]:
+    clean = sanitize_guide_text(text)
+    if not clean or not GUIDE_TTS_ENABLED:
+        return None
+    if texttospeech is None:
+        return None
+
+    key = hashlib.sha1(f"{GUIDE_TTS_VOICE_NAME}|{clean}".encode("utf-8")).hexdigest()[:20]
+    out_path = TTS_DIR / f"guide_{key}.mp3"
+    if out_path.exists():
+        return f"/local_uploads/tts/{out_path.name}"
+
+    client = get_tts_client()
+    synthesis_input = texttospeech.SynthesisInput(text=clean)
+    voice = texttospeech.VoiceSelectionParams(
+        language_code=GUIDE_TTS_LANGUAGE_CODE,
+        name=GUIDE_TTS_VOICE_NAME,
+    )
+    audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
+    response = client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
+    out_path.write_bytes(response.audio_content)
+    return f"/local_uploads/tts/{out_path.name}"
 
 
 # ---------- schemas ----------
@@ -254,6 +324,10 @@ FRAME_SCHEMA: Dict[str, Any] = {
 }
 
 
+class GuideTTSRequest(BaseModel):
+    text: str
+
+
 # ---------- storage ----------
 
 
@@ -277,6 +351,8 @@ class StorageBackend:
         self.project_id = PROJECT_ID
         self._client: Any = None
         if self.mode == "gcs":
+            if storage is None:
+                raise RuntimeError(f"google-cloud-storage is not available: {STORAGE_IMPORT_ERROR}")
             self._client = storage.Client(project=self.project_id or None)
         json_log("storage_backend_ready", storage_mode=self.mode, bucket_name=self.bucket_name or None, project_id=self.project_id or None)
 
@@ -366,9 +442,11 @@ class LiveTextAgent:
             return
         seed = (
             "You are a short, practical live visual coach for a mobile capture session. "
-            "Keep replies under 20 words, concrete, calm, and cinematic. "
+            "You are helping the user make strong vertical shots on a phone, not hunt the exact item. "
+            "Keep replies under 14 words, concrete, calm, and cinematic. "
+            "Prioritize steadiness, framing, light, background cleanup, and shot variety. "
             "Never write paragraphs. Speak like a helpful director. "
-            f"Stage 1 interpretation: {json.dumps(self.stage1_payload, ensure_ascii=False)}"
+            f"Stage 1 capture brief: {json.dumps(self.stage1_payload, ensure_ascii=False)}"
         )
         try:
             self._ctx = get_live_client().aio.live.connect(
@@ -386,11 +464,11 @@ class LiveTextAgent:
 
     async def ask(self, text: str) -> str:
         if not self.enabled:
-            return "Move a little slower and look for one clean hero angle."
+            return "Move slower. Frame one clean vertical shot."
         if self._session is None:
             await self.start()
         if self._session is None:
-            return "Try a steadier frame and fill more of the vertical shot."
+            return "Hold steady. Clean the background and fill the frame."
 
         async with self._lock:
             await self._session.send_client_content(
@@ -405,7 +483,7 @@ class LiveTextAgent:
                 if server_content and getattr(server_content, "turn_complete", False):
                     break
             reply = " ".join(part.strip() for part in chunks if part.strip()).strip()
-            return reply or "Good. Now hold for one cleaner, brighter frame."
+            return reply or "Good. Now hold one cleaner, brighter backup shot."
 
     async def close(self) -> None:
         if self._session is not None:
@@ -493,6 +571,7 @@ STORE = SessionStore()
 
 # ---------- model calls ----------
 
+
 def part_size_bytes(part: Any) -> int:
     inline = getattr(part, "inline_data", None)
     if inline is None:
@@ -504,7 +583,9 @@ def part_size_bytes(part: Any) -> int:
         return len(data.encode("utf-8"))
     return len(data)
 
+
 def generate_json(prompt: str, schema: Dict[str, Any], media_parts: Optional[List[Any]], model: str, temperature: float = 0.3) -> Dict[str, Any]:
+    client = get_sync_client()
     contents: List[Any] = [prompt]
     if media_parts:
         contents.extend(media_parts)
@@ -514,11 +595,9 @@ def generate_json(prompt: str, schema: Dict[str, Any], media_parts: Optional[Lis
             model=model,
             prompt_chars=len(prompt),
             media_parts=len(media_parts or []),
-            approx_payload_bytes=len(prompt.encode("utf-8")) + sum(
-                part_size_bytes(p) for p in media_parts or []
-            ),
+            approx_payload_bytes=len(prompt.encode("utf-8")) + sum(part_size_bytes(p) for p in media_parts or []),
         )
-    response = SYNC_CLIENT.models.generate_content(
+    response = client.models.generate_content(
         model=model,
         contents=contents,
         config={
@@ -532,11 +611,12 @@ def generate_json(prompt: str, schema: Dict[str, Any], media_parts: Optional[Lis
 
 def stage1_prompt(note: str) -> str:
     return (
-        "You are preparing a mobile-first cinematic capture session for a later 30-second story reel. "
-        "Interpret this object photo. Be practical, visual, and concise. "
+        "You are preparing a mobile-first cinematic capture session for a later 30-second vertical story reel. "
+        "Interpret this item photo as a capture brief, not as a rigid object-tracking task. "
         "Return strict JSON only. "
         f"User note: {note or 'No extra note.'} "
-        "Focus on: what the item is, what makes it visually usable, what shots to collect next, and what to avoid."
+        "Focus on: what is visually interesting here, what kinds of strong shots would work next, how to make a clean vertical shot, and what mistakes to avoid. "
+        "Do not over-index on identifying the exact product name. Optimize for beautiful, usable shots."
     )
 
 
@@ -550,14 +630,16 @@ def frame_prompt(stage1_payload: Dict[str, Any], note: str, recent_best: List[Di
         for frame in recent_best[:4]
     ]
     return (
-        "You are judging a single frame from a live mobile capture session for a IG reel 30-second video story. "
-        "Be brutal and practical. Keep only frames with clear composition and story value. "
+        "You are judging a single frame from a live mobile capture session for a vertical 30-second video story. "
+        "Your job is to find strong shots, not to hunt for the exact object from stage 1. "
+        "Reward crisp focus, steady framing, clean background, flattering light, readable subject separation, and shot variety. "
         "Return strict JSON only. "
-        f"Stage 1 interpretation: {json.dumps(stage1_payload, ensure_ascii=False)}. "
+        f"Stage 1 capture brief: {json.dumps(stage1_payload, ensure_ascii=False)}. "
         f"Recent best frames: {json.dumps(best_summary, ensure_ascii=False)}. "
         f"Operator note: {note or 'No extra note.'}. "
-        "Prefer moments that feel like hero, reveal, detail, or context shots. "
-        "Micro direction must be one short spoken-friendly sentence under 12 words."
+        "Prefer frames that can play as hero, detail, reveal, texture, or context shots. "
+        "If the frame is weak, say why briefly. Do not force guidance toward the original item unless it clearly helps. "
+        "Micro direction must be one short spoken-friendly sentence under 10 words."
     )
 
 
@@ -638,26 +720,10 @@ async def maybe_live_reply(state: Dict[str, Any], user_text: str) -> str:
             json_log("live_agent_ask_failed", session_id=state["session_id"], error=str(exc))
     prompt = chat_prompt(state["stage1"]["analysis"], state.get("best_frames", []), user_text)
     response = get_sync_client().models.generate_content(model=STAGE1_MODEL, contents=[prompt])
-    return (response.text or "Move closer and hold for a cleaner hero frame.").strip()
+    return (response.text or "Hold steady and simplify the frame.").strip()
 
 
 # ---------- html ----------
-
-@app.on_event("startup")
-async def on_startup():
-    global SYNC_CLIENT
-    try:
-        SYNC_CLIENT = create_sync_client()
-        json_log(
-            "startup_ok",
-            sync_client_ready=SYNC_CLIENT is not None,
-            project=os.environ.get("PROJECT_ID"),
-            region=os.environ.get("REGION", "global"),
-        )
-    except Exception as e:
-        SYNC_CLIENT = None
-        print("Failed to initialize SYNC_CLIENT")
-        json_log("startup_failed", error=str(e))
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -669,6 +735,21 @@ async def index() -> HTMLResponse:
 @app.get("/healthz")
 async def healthz() -> Dict[str, str]:
     return {"status": "ok", "app": APP_NAME}
+
+
+@app.post("/api/tts/guide")
+async def api_tts_guide(payload: GuideTTSRequest) -> Dict[str, Any]:
+    text = sanitize_guide_text(payload.text)
+    if not text:
+        raise HTTPException(status_code=400, detail="Empty guide text")
+    if not GUIDE_TTS_ENABLED:
+        return {"ok": False, "reason": "disabled"}
+    try:
+        url = synthesize_guide_audio(text)
+    except Exception as exc:
+        json_log("guide_tts_failed", error=str(exc), text=text[:120])
+        raise HTTPException(status_code=500, detail=f"Guide TTS failed: {exc}")
+    return {"ok": True, "text": text, "url": url, "voice": GUIDE_TTS_VOICE_NAME}
 
 
 @app.get("/api/config")
@@ -685,6 +766,9 @@ async def api_config() -> Dict[str, Any]:
         "frame_model": FRAME_MODEL,
         "live_text_model": LIVE_TEXT_MODEL,
         "enable_live_agent": ENABLE_LIVE_AGENT,
+        "guide_tts_enabled": GUIDE_TTS_ENABLED and texttospeech is not None,
+        "guide_tts_voice": GUIDE_TTS_VOICE_NAME,
+        "video_pipeline_script": bool(VIDEO_PIPELINE_SCRIPT),
     }
 
 
@@ -787,7 +871,7 @@ async def api_live_start(session_id: str = Form(...)) -> Dict[str, Any]:
     if not state.get("stage1"):
         raise HTTPException(status_code=400, detail="Run stage 1 first")
     agent = await ensure_live_agent(state)
-    opening = state["stage1"]["analysis"].get("opening_coach_line") or "Let us find one clean hero angle first."
+    opening = state["stage1"]["analysis"].get("opening_coach_line") or "Let us make one clean vertical shot first."
     if agent is not None and agent.enabled:
         try:
             opening = await agent.ask("We are starting now. Give the first short camera instruction.")
@@ -863,9 +947,20 @@ async def api_live_frame(
     metrics["best_score"] = max(metrics.get("best_score", 0), score)
     avg_latency_ms = int(metrics["latency_ms_total"] / max(metrics["frames_seen"], 1))
 
-    guidance_text = analysis.get("micro_direction") or "Adjust a little and try one steadier frame."
+    guidance_text = analysis.get("micro_direction") or "Shift, steady, and simplify the frame."
+    kept_total = len(state.get("best_frames", []))
+    should_stop = False
+    stop_reason = ""
     if score >= 88 and selected:
-        guidance_text = f"Good. Keep this energy and grab one safer backup."
+        guidance_text = "Nice. Take one safer backup, then stop."
+    if kept_total >= AUTO_STOP_KEEP_COUNT and metrics.get("best_score", 0) >= AUTO_STOP_BEST_SCORE:
+        should_stop = True
+        stop_reason = "Enough strong shots collected."
+        guidance_text = "Enough strong shots. Tap Enough moment."
+    elif metrics["frames_seen"] >= AUTO_STOP_MAX_FRAMES:
+        should_stop = True
+        stop_reason = "Reached capture limit. Use the best shots now."
+        guidance_text = "We have enough. Use the best shots now."
 
     recent_event = {
         "type": "frame",
@@ -875,6 +970,7 @@ async def api_live_frame(
         "moment_label": analysis.get("moment_label"),
         "latency_ms": round((time.time() - started) * 1000),
         "guidance": guidance_text,
+        "should_stop": should_stop,
     }
     state.setdefault("recent_events", []).append(recent_event)
     state["recent_events"] = state["recent_events"][-50:]
@@ -891,7 +987,7 @@ async def api_live_frame(
         keep_requested=keep_requested,
         selected=selected,
         score=score,
-        kept_total=len(state.get("best_frames", [])),
+        kept_total=kept_total,
         avg_latency_ms=avg_latency_ms,
         local_name=local_path.name,
     )
@@ -902,9 +998,11 @@ async def api_live_frame(
             "type": "frame_result",
             "selected": selected,
             "frame": {k: v for k, v in candidate.items() if k != "ahash"},
-            "kept_total": len(state.get("best_frames", [])),
+            "kept_total": kept_total,
             "avg_latency_ms": avg_latency_ms,
             "guidance": guidance_text,
+            "should_stop": should_stop,
+            "stop_reason": stop_reason,
         },
     )
     return JSONResponse(
@@ -914,9 +1012,11 @@ async def api_live_frame(
             "analysis": analysis,
             "score": score,
             "candidate": {k: v for k, v in candidate.items() if k != "ahash"},
-            "kept_total": len(state.get("best_frames", [])),
+            "kept_total": kept_total,
             "avg_latency_ms": avg_latency_ms,
             "guidance": guidance_text,
+            "should_stop": should_stop,
+            "stop_reason": stop_reason,
             "latency_ms": round((time.time() - started) * 1000),
         }
     )
@@ -1002,7 +1102,32 @@ async def api_session_finalize(session_id: str = Form(...), enough_moment: str =
     safe_json_dump(summary_path, summary)
 
     pipeline_result: Dict[str, Any] = {"status": "not_started"}
-    print(f"Should trigger a pipeline for footage in: {input_media_dir}")
+    if VIDEO_PIPELINE_SCRIPT:
+        cmd = [
+            "python",
+            VIDEO_PIPELINE_SCRIPT,
+            "--input",
+            str(input_media_dir),
+            "--out-dir",
+            str(export_root / "render_output"),
+        ]
+        if VIDEO_PIPELINE_BRIEF_FILE:
+            cmd.extend(["--brief-file", VIDEO_PIPELINE_BRIEF_FILE])
+        if VIDEO_PIPELINE_EXTRA_ARGS:
+            cmd.extend(shlex.split(VIDEO_PIPELINE_EXTRA_ARGS))
+        try:
+            started = time.time()
+            proc = subprocess.run(cmd, cwd=str(BASE_DIR), capture_output=True, text=True, timeout=3600)
+            pipeline_result = {
+                "status": "finished" if proc.returncode == 0 else "failed",
+                "returncode": proc.returncode,
+                "latency_sec": round(time.time() - started, 2),
+                "stdout_tail": proc.stdout[-3000:],
+                "stderr_tail": proc.stderr[-3000:],
+                "command": cmd,
+            }
+        except Exception as exc:
+            pipeline_result = {"status": "failed", "error": str(exc), "command": cmd}
 
     state["finalized"] = {
         "summary_path": str(summary_path),

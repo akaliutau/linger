@@ -40,9 +40,14 @@ let liveActive = false;
 let liveBusy = false;
 let frameIndex = 0;
 let nextCaptureAt = 0;
+let captureTimer = null;
+let countdownTimer = null;
 let recognition = null;
 let deferredPrompt = null;
 let lastSpoken = '';
+let guideAudio = null;
+let lastGuideSpokenAt = 0;
+const GUIDE_SPEAK_COOLDOWN_MS = 7000;
 
 function nowTime() {
   return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -55,17 +60,45 @@ function logFeed(text) {
   feed.prepend(item);
 }
 
-function setCoach(text, speak = true) {
-  coachText.textContent = text;
-  if (speak && speakToggle.value === 'on' && 'speechSynthesis' in window) {
-    if (lastSpoken !== text) {
-      window.speechSynthesis.cancel();
-      const utter = new SpeechSynthesisUtterance(text);
-      utter.rate = 1;
-      utter.pitch = 1;
-      window.speechSynthesis.speak(utter);
-      lastSpoken = text;
+async function playGuideAudio(text, force = false) {
+  if (!text || speakToggle.value !== 'on') return;
+  const now = Date.now();
+  if (!force && lastSpoken === text) return;
+  if (!force && now - lastGuideSpokenAt < GUIDE_SPEAK_COOLDOWN_MS) return;
+
+  try {
+    const res = await fetch('/api/tts/guide', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.url) {
+      logFeed(`Guide audio unavailable: ${data.detail || data.reason || res.status}`);
+      return;
     }
+
+    if (guideAudio) {
+      try {
+        guideAudio.pause();
+      } catch {}
+    }
+
+    guideAudio = new Audio(data.url);
+    guideAudio.preload = 'auto';
+    await guideAudio.play();
+    lastSpoken = text;
+    lastGuideSpokenAt = now;
+  } catch (err) {
+    console.error('guide audio failed', err);
+    logFeed(`Guide audio failed: ${err?.message || err}`);
+  }
+}
+
+function setCoach(text, speak = false, options = {}) {
+  coachText.textContent = text;
+  if (speak) {
+    playGuideAudio(text, Boolean(options.force));
   }
 }
 
@@ -112,7 +145,7 @@ function applyStage1Ready(payload) {
   liveBtn.disabled = !stream;
   enoughBtn.disabled = false;
 
-  setCoach(analysis.opening_coach_line || 'Start the live hunt.', true);
+  setCoach(analysis.opening_coach_line || 'Start the live capture.', true, { force: true });
   logFeed(`Stage 1 ready: ${analysis.object_label || 'item analyzed'}`);
 }
 
@@ -205,21 +238,22 @@ function connectWs() {
       applyStage1Ready(data);
     }
     if (data.type === 'live_guidance') {
-      setCoach(data.text, true);
+      setCoach(data.text, true, { force: true });
       logFeed(`Coach: ${data.text}`);
     }
     if (data.type === 'frame_result') {
-      setCoach(data.guidance, true);
+      setCoach(data.guidance, data.selected || data.should_stop, { force: Boolean(data.should_stop) });
       liveKept.textContent = `Kept ${data.kept_total}`;
       liveLatency.textContent = `Avg ${data.avg_latency_ms} ms`;
       logFeed(`Frame ${data.frame.frame_index}: ${data.frame.score_0_to_100} ${data.selected ? 'kept' : 'skip'}`);
     }
     if (data.type === 'chat_reply') {
-      setCoach(data.reply, true);
+      setCoach(data.reply, true, { force: true });
       logFeed(`You: ${data.user}<br/>Coach: ${data.reply}`);
     }
     if (data.type === 'finalized') {
       finalizeStatus.textContent = 'Finalized. Basket uploaded.';
+      stopLive('Finalized. Basket uploaded.');
       logFeed('Session finalized and basket exported.');
     }
   };
@@ -301,8 +335,8 @@ async function startLive() {
   const res = await fetch('/api/live/start', { method: 'POST', body: fd });
   const data = await res.json();
   if (res.ok) {
-    setCoach(data.guidance, true);
-    logFeed('Live hunt started.');
+    setCoach(data.guidance, true, { force: true });
+    logFeed('Live capture started.');
   }
 }
 
@@ -313,70 +347,122 @@ function nextCountdownTick() {
   }
   const remain = Math.max(0, nextCaptureAt - Date.now());
   liveCountdown.textContent = remain <= 0 ? 'Capturing…' : `${Math.ceil(remain / 1000)}s`;
-  requestAnimationFrame(nextCountdownTick);
+  if (countdownTimer) clearTimeout(countdownTimer);
+  countdownTimer = window.setTimeout(nextCountdownTick, 250);
+}
+
+function clearCaptureTimer() {
+  if (captureTimer) {
+    clearTimeout(captureTimer);
+    captureTimer = null;
+  }
+}
+
+function clearCountdownTimer() {
+  if (countdownTimer) {
+    clearTimeout(countdownTimer);
+    countdownTimer = null;
+  }
+}
+
+function scheduleNextCapture(delayMs) {
+  clearCaptureTimer();
+  if (!liveActive) return;
+  nextCaptureAt = Date.now() + delayMs;
+  captureTimer = window.setTimeout(() => {
+    captureTimer = null;
+    captureFrame();
+  }, delayMs);
+}
+
+function stopLive(reason = 'Live capture stopped.') {
+  liveActive = false;
+  liveBusy = false;
+  clearCaptureTimer();
+  clearCountdownTimer();
+  liveBtn.textContent = 'Start live capture';
+  liveCountdown.textContent = 'Stopped';
+  if (reason) {
+    logFeed(reason);
+  }
 }
 
 async function captureFrame() {
   if (!liveActive || liveBusy || !stream) return;
   liveBusy = true;
   frameIndex += 1;
-  const videoW = liveVideo.videoWidth || 720;
-  const videoH = liveVideo.videoHeight || 1280;
-  liveCanvas.width = videoW;
-  liveCanvas.height = videoH;
-  const ctx = liveCanvas.getContext('2d');
-  ctx.drawImage(liveVideo, 0, 0, videoW, videoH);
-  const blob = await new Promise((resolve) => liveCanvas.toBlob(resolve, 'image/jpeg', 0.82));
-  const fd = new FormData();
-  fd.append('session_id', ensureSessionId());
-  fd.append('note', sessionNoteInput.value || '');
-  fd.append('frame_index', String(frameIndex));
-  fd.append('ts_ms', String(Date.now()));
-  fd.append('file', blob, `frame-${frameIndex}.jpg`);
-  const res = await fetch('/api/live/frame', { method: 'POST', body: fd });
-  const data = await res.json();
-  liveBusy = false;
-  nextCaptureAt = Date.now() + Number(intervalSec.value) * 1000;
-  if (!res.ok) {
-    setCoach(data.detail || 'Frame analyze failed', false);
-    return;
-  }
-  setCoach(data.guidance, true);
-  liveKept.textContent = `Kept ${data.kept_total}`;
-  liveLatency.textContent = `Avg ${data.avg_latency_ms} ms`;
-  if (data.selected) {
-    const localUrl = URL.createObjectURL(blob);
-    bestFrames = [
-      {
-        ...data.candidate,
-        local_preview_url: localUrl,
-      },
-      ...bestFrames.filter((x) => x.frame_index !== data.candidate.frame_index),
-    ].sort((a, b) => b.score_0_to_100 - a.score_0_to_100).slice(0, 10);
-    renderBestFrames();
-  }
-}
 
-function liveLoop() {
-  if (!liveActive) return;
-  if (Date.now() >= nextCaptureAt && !liveBusy) captureFrame();
-  requestAnimationFrame(liveLoop);
+  try {
+    const videoW = liveVideo.videoWidth || 720;
+    const videoH = liveVideo.videoHeight || 1280;
+    liveCanvas.width = videoW;
+    liveCanvas.height = videoH;
+    const ctx = liveCanvas.getContext('2d');
+    ctx.drawImage(liveVideo, 0, 0, videoW, videoH);
+    const blob = await new Promise((resolve) => liveCanvas.toBlob(resolve, 'image/jpeg', 0.82));
+    if (!blob) {
+      setCoach('Frame capture failed. Try again.', false);
+      return;
+    }
+
+    const fd = new FormData();
+    fd.append('session_id', ensureSessionId());
+    fd.append('note', sessionNoteInput.value || '');
+    fd.append('frame_index', String(frameIndex));
+    fd.append('ts_ms', String(Date.now()));
+    fd.append('file', blob, `frame-${frameIndex}.jpg`);
+
+    const res = await fetch('/api/live/frame', { method: 'POST', body: fd });
+    const data = await res.json();
+
+    if (!res.ok) {
+      setCoach(data.detail || 'Frame analyze failed', false);
+      scheduleNextCapture(Number(intervalSec.value) * 1000);
+      return;
+    }
+
+    setCoach(data.guidance, data.selected || data.should_stop, { force: Boolean(data.should_stop) });
+    liveKept.textContent = `Kept ${data.kept_total}`;
+    liveLatency.textContent = `Avg ${data.avg_latency_ms} ms`;
+
+    if (data.selected) {
+      const localUrl = URL.createObjectURL(blob);
+      bestFrames = [
+        {
+          ...data.candidate,
+          local_preview_url: localUrl,
+        },
+        ...bestFrames.filter((x) => x.frame_index !== data.candidate.frame_index),
+      ].sort((a, b) => b.score_0_to_100 - a.score_0_to_100).slice(0, 10);
+      renderBestFrames();
+    }
+
+    if (data.should_stop) {
+      stopLive(data.stop_reason || 'Enough strong shots collected.');
+      finalizeStatus.textContent = data.stop_reason || 'Enough strong shots collected.';
+      return;
+    }
+
+    scheduleNextCapture(Number(intervalSec.value) * 1000);
+  } catch (err) {
+    console.error('captureFrame failed', err);
+    logFeed(`Capture error: ${err?.message || err}`);
+    scheduleNextCapture(Number(intervalSec.value) * 1000);
+  } finally {
+    liveBusy = false;
+  }
 }
 
 liveBtn.addEventListener('click', async () => {
   if (!stream) return;
   if (!liveActive) {
     liveActive = true;
-    liveBtn.textContent = 'Stop live hunt';
-    nextCaptureAt = Date.now();
+    liveBtn.textContent = 'Stop live capture';
     await startLive();
     nextCountdownTick();
-    liveLoop();
+    scheduleNextCapture(0);
   } else {
-    liveActive = false;
-    liveBtn.textContent = 'Start live hunt';
-    liveCountdown.textContent = 'Stopped';
-    logFeed('Live hunt stopped.');
+    stopLive('Live capture stopped.');
   }
 });
 
@@ -388,7 +474,7 @@ async function sendChatMessage(text) {
   const res = await fetch('/api/live/chat', { method: 'POST', body: fd });
   const data = await res.json();
   if (res.ok) {
-    setCoach(data.reply, true);
+    setCoach(data.reply, true, { force: true });
     logFeed(`You: ${text}<br/>Coach: ${data.reply}`);
   }
 }
@@ -407,6 +493,7 @@ chatInput.addEventListener('keydown', (e) => {
 });
 
 enoughBtn.addEventListener('click', async () => {
+  stopLive('Preparing final basket...');
   finalizeStatus.textContent = 'Finalizing basket and pipeline hand-off...';
   const fd = new FormData();
   fd.append('session_id', ensureSessionId());
