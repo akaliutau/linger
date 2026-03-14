@@ -829,7 +829,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out-dir", default="output", help="Output directory.")
     parser.add_argument("--project", default=os.getenv("PROJECT_ID"), help="Google Cloud project id.")
     parser.add_argument("--location", default=os.getenv("REGION", "global"), help="Vertex AI location.")
-    parser.add_argument("--target-seconds", type=int, default=30, help="Target story duration.")
+    parser.add_argument("--target-seconds", type=int, default=15, help="Target story duration.")
     parser.add_argument("--fps", type=int, default=24, help="Video fps.")
     parser.add_argument("--size", default="720x1280", help="Output size, e.g. 720x1280 for vertical video.")
     parser.add_argument("--understand-model", default="gemini-2.5-flash-lite")

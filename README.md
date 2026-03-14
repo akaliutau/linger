@@ -77,20 +77,26 @@ Output:
 - `storyboard.json`
 - `generated_image_qc.json`
 - `narration.wav`
-- `subtitles.srt`
 - `metrics.json`
 - `final_story.mp4`
 
-## Quick run
+## Local test runs
 
-We have created a simple PoC for the video generation pipeline which can be run locally:
+1. We have created a simple PoC for the video generation pipeline which can be run locally:
 
 ```bash
- python poc_story_video.py --input input/ --brief-file input/goals.txt 
+python poc_story_video.py \
+  --input ./input \
+  --brief-file input/goals.txt \
+  --out-dir ./output \
+  --size 720x1280 --target-seconds 15 
 ```
 It generates a short 15-sec clip using sample footage we've added in `input/` folder.
-
 The cloud version is built on the same algorithm
+
+2. We have created a simple app
+
+
 
 ## Brief Architecture
 

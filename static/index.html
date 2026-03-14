@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0f172a" />
+    <title>Linger Live Capture</title>
+    <link rel="manifest" href="/static/manifest.webmanifest" />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <div class="eyebrow">Linger PoC</div>
+          <h1>Live Capture Director</h1>
+          <p class="subtle">Stage 1: item photo. Stage 2: AI-guided live moment hunt.</p>
+        </div>
+        <button id="installBtn" class="ghost hidden">Install</button>
+      </header>
+
+      <section class="card compact">
+        <div class="grid two">
+          <label>
+            <span>Session ID</span>
+            <input id="sessionId" type="text" placeholder="jar-entryway-test" />
+          </label>
+          <label>
+            <span>Optional note</span>
+            <input id="sessionNote" type="text" placeholder="small ceramic jar on shelf" />
+          </label>
+        </div>
+        <div id="configStrip" class="pill-row"></div>
+      </section>
+
+      <section class="stage-layout">
+        <section class="card stage-card">
+          <div class="section-title">
+            <span class="badge">1</span>
+            <div>
+              <h2>Item Photo</h2>
+              <p class="subtle">Capture one clear photo that sets the context.</p>
+            </div>
+          </div>
+
+          <div class="preview-frame stage1-frame">
+            <img id="stage1Preview" alt="Stage 1 preview" />
+            <div id="stage1Empty" class="empty-state">Take one clean object shot to begin.</div>
+          </div>
+
+          <label class="capture-button">
+            <input id="stage1Input" type="file" accept="image/*" capture="environment" />
+            <span>Take / choose photo</span>
+          </label>
+          <button id="stage1AnalyzeBtn" class="primary" disabled>Analyze item</button>
+
+          <div id="stage1Status" class="status-line"></div>
+          <div id="stage1Result" class="result-stack"></div>
+        </section>
+
+        <section class="card stage-card live-card">
+          <div class="section-title">
+            <span class="badge">2</span>
+            <div>
+              <h2>AI Live Session</h2>
+              <p class="subtle">Periodic stop-shots, live ranking, short spoken guidance.</p>
+            </div>
+          </div>
+
+          <div class="live-preview-wrap">
+            <video id="liveVideo" autoplay playsinline muted></video>
+            <canvas id="liveCanvas" class="hidden"></canvas>
+            <div class="live-overlay">
+              <div class="chip" id="liveCountdown">Idle</div>
+              <div class="chip" id="liveKept">Kept 0</div>
+              <div class="chip" id="liveLatency">Avg -- ms</div>
+            </div>
+          </div>
+
+          <div class="grid two controls-grid">
+            <button id="cameraBtn" class="primary secondary-tone" disabled>Open camera</button>
+            <button id="liveBtn" class="primary" disabled>Start live hunt</button>
+          </div>
+
+          <div class="grid three">
+            <label>
+              <span>Frame every</span>
+              <input id="intervalSec" type="range" min="2" max="6" step="1" value="3" />
+              <small><span id="intervalValue">3</span>s</small>
+            </label>
+            <label>
+              <span>Speak guidance</span>
+              <select id="speakToggle">
+                <option value="on" selected>On</option>
+                <option value="off">Off</option>
+              </select>
+            </label>
+            <label>
+              <span>Voice input</span>
+              <button id="voiceBtn" class="ghost mini">Start mic notes</button>
+            </label>
+          </div>
+
+          <div class="coach-box">
+            <div class="coach-label">AI coach</div>
+            <div id="coachText">Run stage 1 first.</div>
+          </div>
+
+          <div class="chat-row">
+            <input id="chatInput" type="text" placeholder="Ask the coach: should I move closer?" />
+            <button id="chatBtn" class="ghost">Send</button>
+          </div>
+          <div id="voiceTranscript" class="subtle transcript"></div>
+
+          <div class="live-actions">
+            <button id="enoughBtn" class="danger" disabled>Enough moment</button>
+            <div id="finalizeStatus" class="status-line"></div>
+          </div>
+        </section>
+      </section>
+
+      <section class="stage-layout bottom-layout">
+        <section class="card">
+          <div class="section-title small">
+            <h2>Best Frames Basket</h2>
+            <p class="subtle">Only the top local candidates survive.</p>
+          </div>
+          <div id="bestGrid" class="thumb-grid"></div>
+        </section>
+
+        <section class="card">
+          <div class="section-title small">
+            <h2>Session Feed</h2>
+            <p class="subtle">Useful debug for the PoC run.</p>
+          </div>
+          <div id="feed" class="feed"></div>
+        </section>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
