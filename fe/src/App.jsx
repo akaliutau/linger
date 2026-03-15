@@ -247,7 +247,7 @@ function LayoutFixStyles() {
       }
 
       body {
-        overscroll-behavior-y: contain;
+        overscroll-behavior-y: auto;
       }
 
       button,
@@ -279,445 +279,44 @@ function LayoutFixStyles() {
         min-height: var(--app-vh);
       }
 
-      .intro-screen,
-      .review-screen {
+      .intro-screen {
         min-height: var(--app-vh);
         padding: 24px 16px calc(env(safe-area-inset-bottom, 0px) + 28px);
         overflow-x: hidden;
         overflow-y: auto;
         -webkit-overflow-scrolling: touch;
-      }
-
-      .intro-screen {
         display: flex;
         align-items: center;
         justify-content: center;
       }
 
-      .intro-glow {
-        position: absolute;
-        inset: 0;
-        background:
-          radial-gradient(circle at 50% 18%, rgba(96, 119, 255, 0.18), transparent 34%),
-          radial-gradient(circle at 50% 80%, rgba(88, 255, 177, 0.09), transparent 30%);
-        pointer-events: none;
-      }
-
-      .intro-card,
-      .review-card,
-      .idea-box,
-      .best-pill,
-      .pipeline-box,
-      .ghost-button,
-      .capture-button,
-      .score-pill,
-      .mini-stat,
-      .guide-pill,
-      .phase-chip,
-      .status-strip {
-        background: rgba(26, 30, 38, 0.82);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
-        backdrop-filter: blur(14px);
-        -webkit-backdrop-filter: blur(14px);
-      }
-
-      .intro-card,
-      .review-card {
-        position: relative;
-        width: min(720px, 100%);
-        margin: 0 auto;
-        padding: 24px;
-        border-radius: 28px;
-      }
-
-      .eyebrow {
-        font-size: 12px;
-        font-weight: 700;
-        letter-spacing: 0.09em;
-        text-transform: uppercase;
-        opacity: 0.72;
-      }
-
-      .intro-card h1,
-      .review-card h2 {
-        margin: 10px 0 12px;
-        font-size: clamp(30px, 6vw, 46px);
-        line-height: 1.04;
-      }
-
-      .intro-card p,
-      .muted,
-      .idea-box p {
-        margin: 0;
-        color: rgba(245, 247, 251, 0.82);
-        line-height: 1.5;
-      }
-
-      .intro-meta {
-        margin-top: 16px;
-        font-size: 13px;
-        opacity: 0.64;
-      }
-
-      .primary-button,
-      .secondary-button {
-        appearance: none;
-        border: 0;
-        border-radius: 999px;
-        padding: 14px 22px;
-        font-weight: 700;
-        color: #f8fbff;
-      }
-
-      .primary-button {
-        background: linear-gradient(180deg, #6ea3ff 0%, #4f84eb 100%);
-      }
-
-      .secondary-button {
-        background: rgba(255, 255, 255, 0.1);
-      }
-
-      .primary-button.xl {
-        margin-top: 20px;
-        padding: 16px 24px;
-        font-size: 16px;
-      }
-
-      .camera-screen,
-      .wait-screen {
-        position: fixed !important;
-        inset: 0 !important;
-        width: 100vw !important;
-        height: var(--app-vh) !important;
-        min-height: var(--app-vh) !important;
-        overflow: hidden !important;
-        background: #05070b !important;
-      }
-
-      .camera-stage {
-        position: absolute;
-        inset: 0;
-        overflow: hidden;
-        background: #05070b;
-        contain: layout paint size;
-      }
-
-      .camera-video {
-        position: absolute !important;
-        inset: 0 !important;
-        width: 100% !important;
-        height: 100% !important;
-        min-width: 100% !important;
-        min-height: 100% !important;
-        object-fit: cover !important;
-        object-position: center center !important;
-        background: #05070b !important;
-        transform: translateZ(0) !important;
-        backface-visibility: hidden;
-        -webkit-transform: translateZ(0) !important;
-        -webkit-backface-visibility: hidden;
-      }
-
-      .camera-overlay {
-        position: absolute;
-        left: 0;
-        right: 0;
-        z-index: 1;
-        pointer-events: none;
-      }
-
-      .top-gradient {
-        top: 0;
-        height: 156px;
-        background: linear-gradient(180deg, rgba(5, 7, 11, 0.58) 0%, rgba(5, 7, 11, 0.18) 58%, rgba(5, 7, 11, 0) 100%);
-      }
-
-      .bottom-gradient {
-        bottom: 0;
-        height: 240px;
-        background: linear-gradient(0deg, rgba(5, 7, 11, 0.64) 0%, rgba(5, 7, 11, 0.22) 42%, rgba(5, 7, 11, 0) 100%);
-      }
-
-      .hud.top {
-        position: absolute;
-        top: 66px;
-        left: 14px;
-        right: 14px;
-        z-index: 3;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        align-items: flex-start;
-      }
-
-      .score-pill {
-        display: inline-flex;
-        align-items: center;
-        gap: 10px;
-        min-width: 108px;
-        padding: 12px 14px;
-        border-radius: 18px;
-      }
-
-      .score-label,
-      .mini-stat span {
-        font-size: 11px;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        opacity: 0.72;
-      }
-
-      .score-pill strong,
-      .mini-stat strong {
-        font-size: 16px;
-      }
-
-      .hud-cluster {
-        display: inline-flex;
-        flex-wrap: wrap;
-        gap: 8px;
-      }
-
-      .mini-stat {
-        display: inline-flex;
-        align-items: baseline;
-        gap: 8px;
-        padding: 10px 12px;
-        border-radius: 16px;
-      }
-
-      .guide-pill {
-        flex: 1 1 220px;
-        min-width: min(100%, 260px);
-        padding: 14px 16px;
-        border-radius: 20px;
-        font-size: 15px;
-        line-height: 1.32;
-      }
-
-      .phase-chip {
-        position: absolute;
-        top: 14px;
-        left: 14px;
-        z-index: 4;
-        padding: 12px 18px;
-        border-radius: 18px;
-        font-size: 12px;
-        font-weight: 700;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-      }
-
-      .hero-thumb-wrap {
-        position: absolute;
-        top: 66px;
-        right: 14px;
-        z-index: 4;
-        width: 78px;
-        height: 106px;
-        border-radius: 20px;
-        overflow: hidden;
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        background: rgba(18, 20, 24, 0.72);
-        box-shadow: 0 12px 28px rgba(0, 0, 0, 0.22);
-      }
-
-      .hero-thumb,
-      .hero-thumb.placeholder {
-        display: block;
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-      }
-
-      .hero-thumb.placeholder {
-        background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02));
-      }
-
-      .status-strip {
-        position: absolute;
-        left: 14px;
-        right: 14px;
-        z-index: 4;
-        width: min(460px, calc(100% - 28px));
-        padding: 14px 16px;
-        border-radius: 20px;
-        font-size: 17px;
-        line-height: 1.35;
-        transparent: 100%;
-      }
-
-      .camera-controls {
-        position: absolute !important;
-        bottom: max(calc(env(safe-area-inset-bottom, 0px) + 26px), 26px) !important;
-        z-index: 5 !important;
-        display: grid !important;
-        grid-template-columns: 1fr auto 1fr !important;
-        align-items: center !important;
-      }
-
-      .camera-controls .ghost-button,
-      .camera-controls .ghost-spacer {
-        justify-self: start !important;
-      }
-
-      .camera-controls .capture-button {
-        justify-self: center !important;
-      }
-
-      .ghost-button {
-        min-width: 86px;
-        padding: 14px 18px;
-        border-radius: 999px;
-        color: #f6f9fd;
-        border: 0;
-      }
-
-      .ghost-spacer {
-        width: 86px;
-        height: 1px;
-      }
-
-      .capture-button {
-        position: relative !important;
-        display: block !important;
-        width: 116px !important;
-        height: 116px !important;
-        min-width: 116px !important;
-        min-height: 116px !important;
-        padding: 0 !important;
-        border-radius: 999px !important;
-        border: 1px solid rgba(255, 255, 255, 0.14) !important;
-        background: rgba(248, 238, 219, 0.28) !important;
-        overflow: hidden !important;
-      }
-
-      .capture-button.busy {
-        opacity: 0.9 !important;
-      }
-
-      .capture-ring {
-        position: absolute !important;
-        left: 50% !important;
-        top: 38px !important;
-        width: 64px !important;
-        height: 64px !important;
-        transform: translate(-50%, -50%) !important;
-        border-radius: 999px !important;
-        background: rgba(243, 255, 247, 0.98) !important;
-        border: 4px solid rgba(145, 233, 177, 0.98) !important;
-        box-shadow: 0 5px 18px rgba(0, 0, 0, 0.16) !important;
-      }
-
-      .capture-text {
-        position: absolute !important;
-        left: 50% !important;
-        bottom: 14px !important;
-        transform: translateX(-50%) !important;
-        width: calc(100% - 16px) !important;
-        text-align: center !important;
-        font-size: 12px !important;
-        font-weight: 800 !important;
-        letter-spacing: 0.06em !important;
-        line-height: 1.2 !important;
-        text-transform: uppercase !important;
-      }
-
-      .hero-shot-animation {
-        position: absolute;
-        inset: 0;
-        z-index: 6;
-        pointer-events: none;
-      }
-
-      .hero-shot-box {
-        position: absolute;
-        left: 50%;
-        top: 50%;
-        width: min(72vw, 320px);
-        aspect-ratio: 3 / 4;
-        border: 2px solid rgba(255, 255, 255, 0.96);
-        border-radius: 24px;
-        transform: translate(-50%, -50%);
-        box-shadow: 0 0 0 9999px rgba(255, 255, 255, 0.03) inset;
-        animation: heroBoxFly 720ms cubic-bezier(.18,.86,.26,1) forwards;
-      }
-
-      .hero-shot-mini {
-        position: absolute;
-        left: 50%;
-        top: 50%;
-        width: min(72vw, 320px);
-        aspect-ratio: 3 / 4;
-        border-radius: 24px;
-        background-size: cover;
-        background-position: center;
-        transform: translate(-50%, -50%);
-        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
-        animation: heroThumbFly 720ms cubic-bezier(.18,.86,.26,1) forwards;
-      }
-
-      @keyframes heroBoxFly {
-        0% {
-          left: 50%;
-          top: 50%;
-          width: min(72vw, 320px);
-          transform: translate(-50%, -50%) scale(1);
-          opacity: 1;
-          border-radius: 24px;
-        }
-        65% {
-          opacity: 1;
-        }
-        100% {
-          left: calc(100% - 53px);
-          top: 119px;
-          width: 78px;
-          transform: translate(-50%, -50%) scale(1);
-          opacity: 0;
-          border-radius: 20px;
-        }
-      }
-
-      @keyframes heroThumbFly {
-        0% {
-          left: 50%;
-          top: 50%;
-          width: min(72vw, 320px);
-          transform: translate(-50%, -50%) scale(0.96);
-          opacity: 0.18;
-          border-radius: 24px;
-        }
-        45% {
-          opacity: 0.56;
-        }
-        100% {
-          left: calc(100% - 53px);
-          top: 119px;
-          width: 78px;
-          transform: translate(-50%, -50%) scale(1);
-          opacity: 1;
-          border-radius: 20px;
-        }
-      }
-
       .review-screen {
         position: relative !important;
-        min-height: auto !important;
+        min-height: var(--app-vh) !important;
         height: auto !important;
+        display: block !important;
+        padding: 16px 16px calc(env(safe-area-inset-bottom, 0px) + 24px) !important;
         overflow: visible !important;
-        padding: 20px 16px calc(env(safe-area-inset-bottom, 0px) + 132px) !important;
       }
 
       .review-shell {
+        display: block;
         width: min(720px, 100%);
         margin: 0 auto;
-        padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 132px);
       }
 
       .review-card {
-        margin-bottom: calc(env(safe-area-inset-bottom, 0px) + 36px);
+        display: block;
+        width: min(100%, 520px);
+        margin: 0 auto;
+        padding-bottom: 16px;
+      }
+
+      .review-scroll {
+        min-height: 0;
+        overflow: visible;
+        padding-right: 0;
+        -webkit-overflow-scrolling: touch;
       }
 
       .review-header {
@@ -757,6 +356,7 @@ function LayoutFixStyles() {
       .best-pill {
         display: grid;
         grid-template-columns: 84px minmax(0, 1fr);
+        min-width: 0;
         gap: 12px;
         align-items: center;
         padding: 10px;
@@ -770,10 +370,17 @@ function LayoutFixStyles() {
         object-fit: cover;
       }
 
+      .best-pill > div {
+        min-width: 0;
+      }
+
       .best-pill strong,
       .best-pill span,
       .best-pill small {
         display: block;
+        white-space: normal;
+        overflow-wrap: anywhere;
+        word-break: break-word;
       }
 
       .best-pill span,
@@ -789,17 +396,22 @@ function LayoutFixStyles() {
         border-radius: 20px;
       }
 
+      .pipeline-box a {
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+
+      .pipeline-box.generated {
+        margin-top: 0;
+      }
+
       .review-actions {
-        position: sticky;
-        bottom: max(calc(env(safe-area-inset-bottom, 0px) + 12px), 12px);
-        z-index: 3;
         display: flex;
         gap: 12px;
         flex-wrap: wrap;
-        margin-top: 18px;
-        padding-top: 12px;
-        padding-bottom: 2px;
-        background: linear-gradient(180deg, rgba(5, 7, 11, 0) 0%, rgba(5, 7, 11, 0.72) 30%, rgba(5, 7, 11, 0.92) 100%);
+        margin-top: 16px;
+        padding-top: 16px;
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
       }
 
       .review-actions .primary-button,
@@ -884,13 +496,32 @@ function LayoutFixStyles() {
           height: 62px !important;
         }
 
+        .review-screen {
+          padding: 12px 12px calc(env(safe-area-inset-bottom, 0px) + 20px) !important;
+        }
+
         .review-header {
           grid-template-columns: 88px minmax(0, 1fr);
+          gap: 12px;
         }
 
         .review-hero {
           width: 88px;
           height: 120px;
+        }
+
+        .best-pill {
+          grid-template-columns: 72px minmax(0, 1fr);
+        }
+
+        .best-pill img {
+          width: 72px;
+          height: 72px;
+        }
+
+        .review-actions .primary-button,
+        .review-actions .secondary-button {
+          width: 100%;
         }
       }
     `}</style>
@@ -1026,56 +657,72 @@ function ReviewScreen({ heroUrl, analysis, generating, onGenerate, onReset, fina
     bestFrames ||
     []
   ).slice(0, 3)
+  const shareUrl = finalizeInfo?.share_url || finalizeInfo?.signed_url || ''
+  const showPipelineOnly = generating || Boolean(shareUrl)
 
   return (
     <div className="screen review-screen">
       <div className="review-shell">
         <div className="review-card">
-          <div className="review-header">
-            <img src={heroUrl} alt="Hero" className="review-hero" />
-            <div>
-              <div className="eyebrow">Collection ready</div>
-              <h2>{analysis?.object_label || 'Story seed'}</h2>
-              <p className="muted">{analysis?.one_line_summary || 'A compact visual premise for the next reel.'}</p>
-            </div>
-          </div>
-
-          <div className="idea-box">
-            <div className="idea-label">Idea</div>
-            <p>{hook}</p>
-          </div>
-
-          {!!shownFrames.length && (
-            <div className="best-strip">
-              {shownFrames.map((frame) => (
-                <div className="best-pill" key={frame.local_path || frame.file_name || frame.frame_index || frame.preview_url || frame.local_preview_url}>
-                  <img src={frameImageUrl(frame, heroUrl)} alt={frame.moment_label || 'Best frame'} loading="eager" />
+          <div className="review-scroll">
+            {!showPipelineOnly ? (
+              <>
+                <div className="review-header">
+                  <img src={heroUrl} alt="Hero" className="review-hero" />
                   <div>
-                    <strong>{frame.moment_label || prettyRole(frame.cinematic_role)}</strong>
-                    <span>{prettyRole(frame.cinematic_role)} · {frame.score_0_to_100}/100</span>
-                    {frame.best_future_use ? <small>{frame.best_future_use}</small> : null}
+                    <div className="eyebrow">Collection ready</div>
+                    <h2>{analysis?.object_label || 'Story seed'}</h2>
+                    <p className="muted">{analysis?.one_line_summary || 'A compact visual premise for the next reel.'}</p>
                   </div>
                 </div>
-              ))}
-            </div>
-          )}
-          {finalizeInfo?.share_url && (
-            <div className="pipeline-box">
-              <strong>Your reel is on the way</strong>
-              <span>The video will be rendered in 2–3 min.</span>
-              <span/>
-              <a href={finalizeInfo.share_url} target="_blank" rel="noreferrer">Open share link</a>
-            </div>
-          )}
 
-          <div className="review-actions">
-            <button className="primary-button" onClick={onGenerate} disabled={generating}>
-              {generating ? 'Generating…' : 'Generate story'}
-            </button>
-            <button className="secondary-button" onClick={onReset} disabled={generating}>
-              Start again
-            </button>
+                <div className="idea-box">
+                  <div className="idea-label">Idea</div>
+                  <p>{hook}</p>
+                </div>
+
+                {!!shownFrames.length && (
+                  <div className="best-strip">
+                    {shownFrames.map((frame) => (
+                      <div className="best-pill" key={frame.local_path || frame.file_name || frame.frame_index || frame.preview_url || frame.local_preview_url}>
+                        <img src={frameImageUrl(frame, heroUrl)} alt={frame.moment_label || 'Best frame'} loading="eager" />
+                        <div>
+                          <strong>{frame.moment_label || prettyRole(frame.cinematic_role)}</strong>
+                          <span>{prettyRole(frame.cinematic_role)} · {frame.score_0_to_100}/100</span>
+                          {frame.best_future_use ? <small>{frame.best_future_use}</small> : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="pipeline-box generated">
+                <strong>{generating ? 'Generating your reel…' : 'Your reel is on the way'}</strong>
+                <span>
+                  {generating
+                    ? 'Preparing the story basket and requesting the signed URL.'
+                    : 'The video will be rendered in 2–3 min.'}
+                </span>
+                {shareUrl ? (
+                  <a href={shareUrl} target="_blank" rel="noreferrer">Open signed URL</a>
+                ) : (
+                  <span className="muted">The signed URL will appear here as soon as the backend returns it.</span>
+                )}
+              </div>
+            )}
           </div>
+
+          {!showPipelineOnly && (
+            <div className="review-actions">
+              <button className="primary-button" onClick={onGenerate} disabled={generating}>
+                {generating ? 'Generating…' : 'Generate story'}
+              </button>
+              <button className="secondary-button" onClick={onReset} disabled={generating}>
+                Start again
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>

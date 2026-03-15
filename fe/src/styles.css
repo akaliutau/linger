@@ -36,11 +36,15 @@ img { max-width: 100%; display: block; }
   position: relative;
 }
 
-.intro-screen,
-.review-screen {
+.intro-screen {
   display: grid;
   place-items: center;
   padding: 24px;
+}
+
+.review-screen {
+  display: block;
+  padding: 24px 16px calc(env(safe-area-inset-bottom) + 24px);
 }
 
 .intro-glow {
@@ -379,9 +383,13 @@ img { max-width: 100%; display: block; }
 }
 
 .review-shell {
-  width: 100%;
-  display: grid;
-  place-items: center;
+  width: min(720px, 100%);
+  margin: 0 auto;
+  display: block;
+}
+
+.review-card {
+  margin: 0 auto;
 }
 
 .review-header {
@@ -427,10 +435,11 @@ img { max-width: 100%; display: block; }
 
 .best-pill {
   display: grid;
-  grid-template-columns: 56px 1fr;
+  grid-template-columns: 56px minmax(0, 1fr);
   gap: 12px;
   align-items: center;
   padding: 10px;
+  min-width: 0;
 }
 
 .best-pill img {
@@ -441,12 +450,18 @@ img { max-width: 100%; display: block; }
 }
 
 .best-pill strong,
+.best-pill span,
+.best-pill small,
 .pipeline-box strong {
   display: block;
   margin-bottom: 2px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .best-pill span,
+.best-pill small,
 .pipeline-box span {
   color: rgba(235, 243, 255, 0.68);
   font-size: 0.88rem;
