@@ -50,8 +50,8 @@ gcloud run jobs deploy "${JOB_NAME}" \
   --image "${IMAGE_URI}" \
   --region "${REGION}" \
   --service-account "${SA_EMAIL}" \
-  --memory "${JOB_MEMORY:-4Gi}" \
-  --cpu "${JOB_CPU:-2}" \
+  --memory "${JOB_MEMORY:-2Gi}" \
+  --cpu "${JOB_CPU:-1}" \
   --tasks 1 \
   --parallelism 1 \
   --max-retries "${JOB_MAX_RETRIES:-0}" \
