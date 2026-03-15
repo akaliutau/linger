@@ -295,6 +295,7 @@ function CameraScreen({
 function ReviewScreen({ heroUrl, analysis, generating, onGenerate, onReset, finalizeInfo, bestFrames }) {
   const hook = finalizeInfo?.story_seed?.hook || analysis?.story_signal || 'A grounded second-life idea built from the best room evidence.'
   const strategy = finalizeInfo?.story_seed?.generation_strategy || ''
+  const ticket = finalizeInfo?.ticket || null
   const shownFrames = (
     finalizeInfo?.shot_manifest ||
     finalizeInfo?.story_seed?.selected_frame_items ||
@@ -340,6 +341,20 @@ function ReviewScreen({ heroUrl, analysis, generating, onGenerate, onReset, fina
             <div className="pipeline-box">
               <strong>Story pipeline</strong>
               <span>{finalizeInfo.pipeline_result.status}</span>
+              {finalizeInfo?.basket_url ? <small>{finalizeInfo.basket_url}</small> : null}
+            </div>
+          )}
+
+          {ticket && (
+            <div className="pipeline-box">
+              <strong>Ticket</strong>
+              <span>{ticket.ticket_id}</span>
+              <small>{ticket.status}</small>
+              {ticket.download_url ? (
+                <a href={ticket.download_url} target="_blank" rel="noreferrer">Download mp4</a>
+              ) : (
+                <small>{ticket.submit_url || 'Mock submission logged in backend.'}</small>
+              )}
             </div>
           )}
 
@@ -1052,9 +1067,11 @@ export default function App() {
       })
 
       setStatus(
-        finalized.finalized?.pipeline_result?.status === 'finished'
-          ? 'Story started.'
-          : 'Bundle ready for video pipeline.'
+        finalized.finalized?.ticket?.status === 'queued'
+          ? 'Story queued. Ticket ready.'
+          : finalized.finalized?.pipeline_result?.status === 'finished'
+            ? 'Story started.'
+            : 'Bundle ready for video pipeline.'
       )
     } catch (err) {
       const message = shortError(err)

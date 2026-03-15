@@ -9,6 +9,7 @@ import re
 import hashlib
 import shlex
 import subprocess
+import sys
 import time
 import uuid
 from dataclasses import dataclass
@@ -79,6 +80,8 @@ MAX_RECENT_UPLOADS = int(os.getenv("MAX_RECENT_UPLOADS", "24"))
 VIDEO_PIPELINE_SCRIPT = os.getenv("VIDEO_PIPELINE_SCRIPT", "")
 VIDEO_PIPELINE_BRIEF_FILE = os.getenv("VIDEO_PIPELINE_BRIEF_FILE", "")
 VIDEO_PIPELINE_EXTRA_ARGS = os.getenv("VIDEO_PIPELINE_EXTRA_ARGS", "")
+VIDEO_PIPELINE_TRIGGER_MODE = os.getenv("VIDEO_PIPELINE_TRIGGER_MODE", "mock").lower()
+VIDEO_PIPELINE_SUBMIT_URL = os.getenv("VIDEO_PIPELINE_SUBMIT_URL", "mock://linger/video-pipeline")
 DEBUG_LOG_PROMPTS = os.getenv("DEBUG_LOG_PROMPTS", "true").lower() in {"1", "true", "yes", "on"}
 GUIDE_TTS_ENABLED = os.getenv("GUIDE_TTS_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 GUIDE_TTS_LANGUAGE_CODE = os.getenv("GUIDE_TTS_LANGUAGE_CODE", "en-US")
@@ -451,7 +454,7 @@ class StorageBackend:
             raise RuntimeError("Google Cloud Storage is not configured")
         return self._client.bucket(self.bucket_name)
 
-    def store_bytes(self, *, prefix: str, filename: str, data: bytes, width: int, height: int, metadata: Dict[str, str]) -> StoredAsset:
+    def store_bytes(self, *, prefix: str, filename: str, data: bytes, width: int, height: int, metadata: Dict[str, str], content_type: str = "image/jpeg") -> StoredAsset:
         object_name = f"{prefix.rstrip('/')}/{filename}"
         created_at = utc_iso()
         if self.mode == "local":
@@ -473,7 +476,7 @@ class StorageBackend:
         blob = self.bucket.blob(object_name)
         blob.metadata = metadata
         blob.cache_control = "public, max-age=3600"
-        blob.upload_from_string(data, content_type="image/jpeg")
+        blob.upload_from_string(data, content_type=content_type)
         return StoredAsset(
             storage_mode="gcs",
             object_name=object_name,
@@ -1119,6 +1122,141 @@ def build_idea_text(story_seed: Dict[str, Any], export_frames: List[Dict[str, An
     lines.append(f"Idea: {story_seed.get('idea') or ''}")
     return "\n".join(lines).strip() + "\n"
 
+def basket_dir(session_id: str) -> Path:
+    return ensure_dir(export_dir(session_id) / "basket")
+
+
+def guess_content_type(filename: str) -> str:
+    suffix = Path(filename).suffix.lower()
+    if suffix == ".json":
+        return "application/json"
+    if suffix == ".txt":
+        return "text/plain; charset=utf-8"
+    if suffix in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if suffix == ".png":
+        return "image/png"
+    if suffix == ".mp4":
+        return "video/mp4"
+    return "application/octet-stream"
+
+
+def basket_pointer_for(session_id: str, basket_prefix: str, basket_root: Path) -> str:
+    if STORAGE.mode == "gcs" and BUCKET_NAME:
+        return f"gs://{BUCKET_NAME}/{basket_prefix.rstrip('/')}"
+    return str(basket_root)
+
+
+def upload_basket_file(session_id: str, basket_prefix: str, local_path: Path, metadata: Dict[str, str]) -> Optional[Dict[str, Any]]:
+    if not local_path.exists():
+        return None
+    upload = STORAGE.store_bytes(
+        prefix=basket_prefix,
+        filename=local_path.name,
+        data=local_path.read_bytes(),
+        width=0,
+        height=0,
+        metadata={**metadata, "session_id": session_id, "created_at": utc_iso()},
+        content_type=guess_content_type(local_path.name),
+    )
+    return upload.__dict__
+
+
+def make_mock_ticket(session_id: str, basket_url: str) -> Dict[str, Any]:
+    ticket_id = f"linger-job-{uuid.uuid4().hex[:10]}"
+    submit_url = f"{VIDEO_PIPELINE_SUBMIT_URL.rstrip('/')}/{ticket_id}" if VIDEO_PIPELINE_SUBMIT_URL else ticket_id
+    download_url = f"{submit_url}/result.mp4" if submit_url.startswith(("http://", "https://")) else None
+    return {
+        "ticket_id": ticket_id,
+        "status": "queued",
+        "submit_url": submit_url,
+        "basket_url": basket_url,
+        "download_url": download_url,
+        "message": "Mock ticket created. Trigger the downstream pipeline with basket_url.",
+        "created_at": utc_iso(),
+    }
+
+
+def trigger_video_pipeline(
+    *,
+    session_id: str,
+    basket_url: str,
+    basket_root: Path,
+    export_root: Path,
+    story_seed: Dict[str, Any],
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    ticket = make_mock_ticket(session_id, basket_url)
+    pipeline_result: Dict[str, Any] = {
+        "status": "queued",
+        "mode": VIDEO_PIPELINE_TRIGGER_MODE,
+        "basket_url": basket_url,
+        "submit_url": ticket["submit_url"],
+        "message": ticket["message"],
+    }
+
+    submit_payload = {
+        "session_id": session_id,
+        "ticket_id": ticket["ticket_id"],
+        "basket_url": basket_url,
+        "story_seed": {
+            "title": story_seed.get("title"),
+            "hook": story_seed.get("hook"),
+            "visual_style": story_seed.get("visual_style"),
+            "generation_strategy": story_seed.get("generation_strategy"),
+        },
+    }
+
+    if VIDEO_PIPELINE_TRIGGER_MODE == "subprocess" and VIDEO_PIPELINE_SCRIPT:
+        cmd = [
+            sys.executable,
+            VIDEO_PIPELINE_SCRIPT,
+            "--input",
+            basket_url,
+            "--out-dir",
+            str(export_root / "render_output"),
+        ]
+        if VIDEO_PIPELINE_BRIEF_FILE:
+            cmd.extend(["--brief-file", VIDEO_PIPELINE_BRIEF_FILE])
+        if VIDEO_PIPELINE_EXTRA_ARGS:
+            cmd.extend(shlex.split(VIDEO_PIPELINE_EXTRA_ARGS))
+        try:
+            started = time.time()
+            proc = subprocess.run(cmd, cwd=str(BASE_DIR), capture_output=True, text=True, timeout=3600)
+            pipeline_result = {
+                "status": "finished" if proc.returncode == 0 else "failed",
+                "mode": "subprocess",
+                "returncode": proc.returncode,
+                "latency_sec": round(time.time() - started, 2),
+                "stdout_tail": proc.stdout[-3000:],
+                "stderr_tail": proc.stderr[-3000:],
+                "command": cmd,
+                "basket_url": basket_url,
+                "submit_payload": submit_payload,
+            }
+        except Exception as exc:
+            pipeline_result = {
+                "status": "failed",
+                "mode": "subprocess",
+                "error": str(exc),
+                "command": cmd,
+                "basket_url": basket_url,
+                "submit_payload": submit_payload,
+            }
+        ticket["status"] = pipeline_result["status"]
+        return ticket, pipeline_result
+
+    json_log(
+        "video_pipeline_submit_mock",
+        session_id=session_id,
+        ticket_id=ticket["ticket_id"],
+        submit_url=ticket["submit_url"],
+        basket_url=basket_url,
+        submit_payload=submit_payload,
+    )
+    pipeline_result["submit_payload"] = submit_payload
+    return ticket, pipeline_result
+
+
 
 # ---------- html ----------
 
@@ -1174,6 +1312,8 @@ async def api_config() -> Dict[str, Any]:
         "guide_tts_enabled": GUIDE_TTS_ENABLED and texttospeech is not None,
         "guide_tts_voice": GUIDE_TTS_VOICE_NAME,
         "video_pipeline_script": bool(VIDEO_PIPELINE_SCRIPT),
+        "video_pipeline_trigger_mode": VIDEO_PIPELINE_TRIGGER_MODE,
+        "video_pipeline_submit_url": VIDEO_PIPELINE_SUBMIT_URL,
         "react_dist": str(REACT_DIST_DIR) if REACT_DIST_DIR else None,
         "model_timeout_sec": MODEL_TIMEOUT_SEC,
         "auto_stop_keep_count": AUTO_STOP_KEEP_COUNT,
@@ -1568,17 +1708,17 @@ async def api_session_finalize(session_id: str = Form(...), enough_moment: str =
     shot_manifest: List[Dict[str, Any]] = []
     basket_prefix = f"captures/{session_id}/basket"
     export_root = export_dir(session_id)
-    input_media_dir = ensure_dir(export_root / "input_media")
-    summary_path = export_root / "session_summary.json"
-    story_seed_path = export_root / "story_seed.json"
-    shot_manifest_path = export_root / "shot_manifest.json"
-    idea_path = export_root / "idea.txt"
+    basket_root = basket_dir(session_id)
+    summary_path = basket_root / "session_summary.json"
+    story_seed_path = basket_root / "story_seed.json"
+    shot_manifest_path = basket_root / "shot_manifest.json"
+    idea_path = basket_root / "idea.txt"
 
     hero_export_path: Optional[Path] = None
     stage1_path = Path(state["stage1"]["local_path"])
     if stage1_path.exists():
         hero_bytes = stage1_path.read_bytes()
-        hero_export_path = input_media_dir / "hero.jpg"
+        hero_export_path = basket_root / "hero.jpg"
         hero_export_path.write_bytes(hero_bytes)
 
         hero_upload = STORAGE.store_bytes(
@@ -1592,6 +1732,7 @@ async def api_session_finalize(session_id: str = Form(...), enough_moment: str =
                 "capture_type": "hero",
                 "created_at": utc_iso(),
             },
+            content_type="image/jpeg",
         )
         basket_assets.append(hero_upload.__dict__)
 
@@ -1602,7 +1743,7 @@ async def api_session_finalize(session_id: str = Form(...), enough_moment: str =
 
         frame_bytes = local_path.read_bytes()
         target_name = f"best_{rank:02d}.jpg"
-        copied = input_media_dir / target_name
+        copied = basket_root / target_name
         copied.write_bytes(frame_bytes)
 
         upload = STORAGE.store_bytes(
@@ -1620,6 +1761,7 @@ async def api_session_finalize(session_id: str = Form(...), enough_moment: str =
                 "score": str(frame.get("score_0_to_100", 0)),
                 "created_at": utc_iso(),
             },
+            content_type="image/jpeg",
         )
 
         frame["preview_url"] = upload.view_url
@@ -1651,8 +1793,8 @@ async def api_session_finalize(session_id: str = Form(...), enough_moment: str =
     )
     story_seed = {
         **story_seed,
-        "hero_image": "input_media/hero.jpg" if hero_export_path else None,
-        "selected_frames": [f"input_media/{shot['file_name']}" for shot in shot_manifest],
+        "hero_image": "hero.jpg" if hero_export_path else None,
+        "selected_frames": [shot["file_name"] for shot in shot_manifest],
         "selected_frame_items": shot_manifest,
         "selected_roles": [shot.get("cinematic_role") for shot in shot_manifest],
         "fallback_used": used_fallback_frame,
@@ -1663,13 +1805,24 @@ async def api_session_finalize(session_id: str = Form(...), enough_moment: str =
         shot_manifest_path,
         {
             "session_id": session_id,
-            "hero_image": "input_media/hero.jpg" if hero_export_path else None,
+            "hero_image": "hero.jpg" if hero_export_path else None,
             "shots": shot_manifest,
             "created_at": utc_iso(),
         },
     )
     idea_path.write_text(build_idea_text(story_seed, export_frames), encoding="utf-8")
 
+    basket_assets.extend(
+        item
+        for item in [
+            upload_basket_file(session_id, basket_prefix, story_seed_path, {"capture_type": "story_seed"}),
+            upload_basket_file(session_id, basket_prefix, shot_manifest_path, {"capture_type": "shot_manifest"}),
+            upload_basket_file(session_id, basket_prefix, idea_path, {"capture_type": "idea_text"}),
+        ]
+        if item is not None
+    )
+
+    basket_url = basket_pointer_for(session_id, basket_prefix, basket_root)
     summary = {
         "session_id": session_id,
         "enough_moment": enough_moment,
@@ -1678,6 +1831,8 @@ async def api_session_finalize(session_id: str = Form(...), enough_moment: str =
         "best_frames": [{k: v for k, v in frame.items() if k != "ahash"} for frame in export_frames],
         "fallback_top_frame": {k: v for k, v in (state.get("fallback_top_frame") or {}).items() if k != "ahash"} if state.get("fallback_top_frame") else None,
         "basket_assets": basket_assets,
+        "basket_url": basket_url,
+        "basket_root": str(basket_root),
         "shot_manifest_path": str(shot_manifest_path),
         "story_seed_path": str(story_seed_path),
         "idea_path": str(idea_path),
@@ -1685,34 +1840,17 @@ async def api_session_finalize(session_id: str = Form(...), enough_moment: str =
         "storage_mode": STORAGE.mode,
     }
     safe_json_dump(summary_path, summary)
+    summary_upload = upload_basket_file(session_id, basket_prefix, summary_path, {"capture_type": "session_summary"})
+    if summary_upload is not None:
+        basket_assets.append(summary_upload)
 
-    pipeline_result: Dict[str, Any] = {"status": "not_started"}
-    if VIDEO_PIPELINE_SCRIPT:
-        cmd = [
-            "python",
-            VIDEO_PIPELINE_SCRIPT,
-            "--input",
-            str(input_media_dir),
-            "--out-dir",
-            str(export_root / "render_output"),
-        ]
-        if VIDEO_PIPELINE_BRIEF_FILE:
-            cmd.extend(["--brief-file", VIDEO_PIPELINE_BRIEF_FILE])
-        if VIDEO_PIPELINE_EXTRA_ARGS:
-            cmd.extend(shlex.split(VIDEO_PIPELINE_EXTRA_ARGS))
-        try:
-            started = time.time()
-            proc = subprocess.run(cmd, cwd=str(BASE_DIR), capture_output=True, text=True, timeout=3600)
-            pipeline_result = {
-                "status": "finished" if proc.returncode == 0 else "failed",
-                "returncode": proc.returncode,
-                "latency_sec": round(time.time() - started, 2),
-                "stdout_tail": proc.stdout[-3000:],
-                "stderr_tail": proc.stderr[-3000:],
-                "command": cmd,
-            }
-        except Exception as exc:
-            pipeline_result = {"status": "failed", "error": str(exc), "command": cmd}
+    ticket, pipeline_result = trigger_video_pipeline(
+        session_id=session_id,
+        basket_url=basket_url,
+        basket_root=basket_root,
+        export_root=export_root,
+        story_seed=story_seed,
+    )
 
     state["story_seed"] = story_seed
     state["finalized"] = {
@@ -1721,9 +1859,11 @@ async def api_session_finalize(session_id: str = Form(...), enough_moment: str =
         "shot_manifest_path": str(shot_manifest_path),
         "idea_path": str(idea_path),
         "basket_assets": basket_assets,
+        "basket_url": basket_url,
+        "basket_root": str(basket_root),
         "shot_manifest": shot_manifest,
         "pipeline_result": pipeline_result,
-        "input_media_dir": str(input_media_dir),
+        "ticket": ticket,
         "export_root": str(export_root),
         "enough_moment": enough_moment,
         "selected_count": len(shot_manifest),

@@ -19,12 +19,14 @@ import argparse
 import json
 import mimetypes
 import os
+import random
 import sys
 import textwrap
 import time
+from urllib.parse import urlparse
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import dotenv
 from PIL import Image
@@ -32,6 +34,12 @@ from moviepy import AudioFileClip, ColorClip, CompositeVideoClip, ImageClip, Vid
 
 from google import genai
 from google.cloud import texttospeech
+try:
+    from google.cloud import storage
+    STORAGE_IMPORT_ERROR: Optional[str] = None
+except Exception as exc:  # pragma: no cover
+    storage = None  # type: ignore[assignment]
+    STORAGE_IMPORT_ERROR = str(exc)
 from google.genai import types
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
@@ -48,6 +56,11 @@ class MediaAsset:
     width: int
     height: int
     duration_sec: Optional[float] = None
+    file_name: str = ""
+    moment_label: str = ""
+    cinematic_role: str = ""
+    best_future_use: str = ""
+    score_0_to_100: Optional[int] = None
 
 
 class RunLogger:
@@ -141,39 +154,255 @@ def aspect_ratio_for_size(size: Tuple[int, int]) -> str:
     return "16:9"
 
 
+def shorten_error(exc: Exception, limit: int = 220) -> str:
+    message = str(exc).strip() or exc.__class__.__name__
+    if len(message) <= limit:
+        return message
+    return message[: limit - 3] + "..."
+
+
+def is_retryable_error(exc: Exception) -> bool:
+    status_code = getattr(exc, "status_code", None)
+    message = str(exc).upper()
+    if status_code in {408, 409, 425, 429, 500, 502, 503, 504}:
+        return True
+    retry_markers = [
+        "RESOURCE_EXHAUSTED",
+        "RATE LIMIT",
+        "TOO MANY REQUESTS",
+        "TIMED OUT",
+        "TIMEOUT",
+        "UNAVAILABLE",
+        "INTERNAL",
+        "BAD GATEWAY",
+        "SERVICE UNAVAILABLE",
+        "GATEWAY TIMEOUT",
+        "CONNECTION RESET",
+        "REMOTE PROTOCOL ERROR",
+    ]
+    return any(marker in message for marker in retry_markers)
+
+
+def retry_call(
+    fn: Callable[[], Any],
+    *,
+    op_name: str,
+    max_attempts: int = 6,
+    initial_delay_sec: float = 2.0,
+    max_delay_sec: float = 20.0,
+) -> Any:
+    delay = initial_delay_sec
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return fn()
+        except Exception as exc:
+            last_exc = exc
+            retryable = is_retryable_error(exc)
+            if attempt >= max_attempts or not retryable:
+                raise
+            jitter = random.uniform(0.0, min(1.0, delay * 0.2))
+            sleep_for = min(max_delay_sec, delay) + jitter
+            debug(
+                f"{op_name} failed on attempt {attempt}/{max_attempts} with {exc.__class__.__name__}: "
+                f"{shorten_error(exc)} | retrying in {sleep_for:.1f}s"
+            )
+            time.sleep(sleep_for)
+            delay = min(max_delay_sec, delay * 2.0)
+    if last_exc:
+        raise last_exc
+    raise RuntimeError(f"{op_name} failed without an exception.")
+
+
+def existing_generated_file(scene_dir: Path, scene_id: str) -> Optional[Path]:
+    matches = sorted(scene_dir.glob(f"{scene_id}_*.png"))
+    return matches[0] if matches else None
+
+
 # ---------- Client ----------
 
 
 def make_genai_client(project: Optional[str], location: str) -> Any:
+    effective_location = location or "global"
     kwargs: Dict[str, Any] = {
         "http_options": {"api_version": "v1"},
     }
     if project:
-        kwargs.update({"vertexai": True, "project": project, "location": location})
-    debug(f"Creating GenAI client. project={project or '<env/default>'}, location={location}")
+        kwargs.update({"vertexai": True, "project": project, "location": effective_location})
+    debug(f"Creating GenAI client. project={project or '<env/default>'}, location={effective_location}")
+    if effective_location != "global":
+        debug("Using a regional Vertex endpoint. For burstier image generation, --location global is usually more resilient to 429s.")
     return genai.Client(**kwargs)
 
 
 # ---------- Media discovery ----------
 
 
-def discover_media(media_dir: Path) -> List[MediaAsset]:
+def normalize_input_ref(value: str) -> str:
+    raw = value.strip()
+    if raw.startswith("gs://"):
+        return raw.rstrip("/")
+    if raw.startswith("https://storage.googleapis.com/") or raw.startswith("http://storage.googleapis.com/"):
+        parsed = urlparse(raw)
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) >= 2:
+            return f"gs://{parts[0]}/{'/'.join(parts[1:])}".rstrip("/")
+    if raw.startswith("https://storage.cloud.google.com/"):
+        parsed = urlparse(raw)
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) >= 2:
+            return f"gs://{parts[0]}/{'/'.join(parts[1:])}".rstrip("/")
+    return raw
+
+
+def is_gcs_uri(value: str) -> bool:
+    return normalize_input_ref(value).startswith("gs://")
+
+
+def split_gcs_uri(uri: str) -> Tuple[str, str]:
+    normalized = normalize_input_ref(uri)
+    if not normalized.startswith("gs://"):
+        raise ValueError(f"Not a gs:// URI: {uri}")
+    bucket_and_prefix = normalized[5:]
+    bucket_name, _, prefix = bucket_and_prefix.partition("/")
+    if not bucket_name:
+        raise ValueError(f"Missing bucket name in URI: {uri}")
+    return bucket_name, prefix.rstrip("/")
+
+
+def read_json_if_exists(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def build_file_hints(bundle_context: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    hints: Dict[str, Dict[str, Any]] = {}
+    story_seed = bundle_context.get("story_seed") or {}
+    if story_seed.get("hero_image"):
+        hints[Path(story_seed["hero_image"]).name] = {
+            "moment_label": "Hero object",
+            "cinematic_role": "hero_object",
+            "best_future_use": "anchor still",
+            "score_0_to_100": 100,
+        }
+
+    frame_items = story_seed.get("selected_frame_items") or (bundle_context.get("shot_manifest") or {}).get("shots") or []
+    for item in frame_items:
+        name = item.get("file_name") or Path(item.get("local_path") or item.get("preview_url") or "").name
+        if not name:
+            continue
+        hints[name] = {
+            "moment_label": item.get("moment_label", ""),
+            "cinematic_role": item.get("cinematic_role", ""),
+            "best_future_use": item.get("best_future_use", ""),
+            "score_0_to_100": item.get("score_0_to_100"),
+        }
+    return hints
+
+
+def load_bundle_context(bundle_dir: Path) -> Dict[str, Any]:
+    context = {
+        "story_seed": read_json_if_exists(bundle_dir / "story_seed.json"),
+        "shot_manifest": read_json_if_exists(bundle_dir / "shot_manifest.json"),
+        "session_summary": read_json_if_exists(bundle_dir / "session_summary.json"),
+        "idea_text": read_text(bundle_dir / "idea.txt" if (bundle_dir / "idea.txt").exists() else None),
+    }
+    context["file_hints"] = build_file_hints(context)
+    return context
+
+
+def compose_pipeline_brief(base_brief: str, bundle_context: Dict[str, Any]) -> str:
+    parts = []
+    if base_brief:
+        parts.append(base_brief.strip())
+
+    story_seed = bundle_context.get("story_seed") or {}
+    if story_seed:
+        parts.append(
+            textwrap.dedent(
+                f"""
+                Capture handoff:
+                - title: {story_seed.get('title') or 'Story seed'}
+                - hook: {story_seed.get('hook') or story_seed.get('idea') or ''}
+                - tone: {story_seed.get('tone') or ''}
+                - visual_style: {story_seed.get('visual_style') or ''}
+                - generation_strategy: {story_seed.get('generation_strategy') or ''}
+                - selected_roles: {', '.join(story_seed.get('selected_roles') or [])}
+                """
+            ).strip()
+        )
+
+    if bundle_context.get("idea_text"):
+        parts.append(f"Capture operator note:\n{bundle_context['idea_text']}")
+
+    return "\n\n".join(part for part in parts if part).strip()
+
+
+def prepare_input_bundle(input_ref: str, out_dir: Path, project: Optional[str]) -> Tuple[Path, Dict[str, Any], Dict[str, Any]]:
+    normalized = normalize_input_ref(input_ref)
+    if is_gcs_uri(normalized):
+        if storage is None:
+            raise RuntimeError(f"google-cloud-storage is required for gs:// input: {STORAGE_IMPORT_ERROR}")
+        bucket_name, prefix = split_gcs_uri(normalized)
+        target_dir = ensure_dir(out_dir / "downloaded_bundle")
+        client = storage.Client(project=project or None)
+        blobs = list(client.bucket(bucket_name).list_blobs(prefix=prefix))
+        if not blobs:
+            raise SystemExit(f"No objects found under {normalized}")
+        prefix_root = f"{prefix.rstrip('/')}/" if prefix else ""
+        for blob in blobs:
+            if blob.name.endswith("/"):
+                continue
+            rel_name = blob.name[len(prefix_root):] if prefix_root and blob.name.startswith(prefix_root) else Path(blob.name).name
+            if not rel_name:
+                continue
+            local_path = target_dir / rel_name
+            ensure_dir(local_path.parent)
+            blob.download_to_filename(str(local_path))
+        bundle_dir = target_dir
+        source_info = {"input": normalized, "mode": "gcs", "local_bundle_dir": str(bundle_dir)}
+    else:
+        bundle_dir = Path(normalized)
+        source_info = {"input": normalized, "mode": "local", "local_bundle_dir": str(bundle_dir)}
+
+    if not bundle_dir.exists():
+        raise SystemExit(f"Media directory does not exist: {bundle_dir}")
+
+    bundle_context = load_bundle_context(bundle_dir)
+    dump_json(out_dir / "input_source.json", source_info)
+    dump_json(out_dir / "bundle_context.json", {k: v for k, v in bundle_context.items() if k != "idea_text"})
+    if bundle_context.get("idea_text"):
+        (out_dir / "bundle_idea.txt").write_text(bundle_context["idea_text"], encoding="utf-8")
+    return bundle_dir, bundle_context, source_info
+
+
+def discover_media(media_dir: Path, file_hints: Optional[Dict[str, Dict[str, Any]]] = None) -> List[MediaAsset]:
     assets: List[MediaAsset] = []
+    file_hints = file_hints or {}
     debug(f"Scanning media directory: {media_dir}")
-    for index, path in enumerate(sorted(p for p in media_dir.rglob("*") if p.is_file())):
+    asset_index = 0
+    for path in sorted(p for p in media_dir.rglob("*") if p.is_file()):
         suffix = path.suffix.lower()
         if suffix not in IMAGE_EXTS | VIDEO_EXTS:
             continue
+        asset_index += 1
+        hint = file_hints.get(path.name, {})
         if suffix in IMAGE_EXTS:
             with Image.open(path) as img:
                 width, height = img.size
             asset = MediaAsset(
-                file_id=f"asset_{index + 1:02d}",
+                file_id=f"asset_{asset_index:02d}",
                 path=str(path),
                 kind="image",
                 mime_type=guess_mime(path),
                 width=width,
                 height=height,
+                file_name=path.name,
+                moment_label=str(hint.get("moment_label") or ""),
+                cinematic_role=str(hint.get("cinematic_role") or ""),
+                best_future_use=str(hint.get("best_future_use") or ""),
+                score_0_to_100=hint.get("score_0_to_100"),
             )
             assets.append(asset)
         else:
@@ -184,13 +413,18 @@ def discover_media(media_dir: Path) -> List[MediaAsset]:
             finally:
                 clip.close()
             asset = MediaAsset(
-                file_id=f"asset_{index + 1:02d}",
+                file_id=f"asset_{asset_index:02d}",
                 path=str(path),
                 kind="video",
                 mime_type=guess_mime(path),
                 width=int(width),
                 height=int(height),
                 duration_sec=duration_sec,
+                file_name=path.name,
+                moment_label=str(hint.get("moment_label") or ""),
+                cinematic_role=str(hint.get("cinematic_role") or ""),
+                best_future_use=str(hint.get("best_future_use") or ""),
+                score_0_to_100=hint.get("score_0_to_100"),
             )
             assets.append(asset)
 
@@ -198,9 +432,11 @@ def discover_media(media_dir: Path) -> List[MediaAsset]:
             "Discovered "
             f"{asset.file_id}: {Path(asset.path).name} | {asset.kind} | {asset.width}x{asset.height}"
             + (f" | {asset.duration_sec:.2f}s" if asset.duration_sec is not None else "")
+            + (f" | role={asset.cinematic_role}" if asset.cinematic_role else "")
             + f" | {format_bytes(file_size_bytes(Path(asset.path)))}"
         )
     return assets
+
 
 
 # ---------- Prompt schemas ----------
@@ -353,16 +589,25 @@ def generate_json(
     if media_parts:
         contents.extend(media_parts)
 
-    response = client.models.generate_content(
-        model=model,
-        contents=contents,
-        config={
-            "temperature": 0.3,
-            "response_mime_type": "application/json",
-            "response_schema": schema,
-        },
+    def _call() -> Dict[str, Any]:
+        response = client.models.generate_content(
+            model=model,
+            contents=contents,
+            config={
+                "temperature": 0.3,
+                "response_mime_type": "application/json",
+                "response_schema": schema,
+            },
+        )
+        return json.loads(response.text)
+
+    return retry_call(
+        _call,
+        op_name=f"generate_json[{model}]",
+        max_attempts=6,
+        initial_delay_sec=2.0,
+        max_delay_sec=18.0,
     )
-    return json.loads(response.text)
 
 
 def interpret_images(
@@ -379,19 +624,25 @@ def interpret_images(
         asset_path = Path(asset.path)
         prompt = textwrap.dedent(
             f"""
-            You are evaluating a user-provided image for a short AI-generated video story.
+            You are evaluating a user-provided image for a short AI-generated vertical story reel.
             The product brief is below.
 
             Brief:
             {brief or 'No extra brief provided.'}
 
+            Known capture metadata:
+            - moment_label: {asset.moment_label or 'unknown'}
+            - cinematic_role: {asset.cinematic_role or 'unknown'}
+            - best_future_use: {asset.best_future_use or 'unknown'}
+            - capture_score: {asset.score_0_to_100 if asset.score_0_to_100 is not None else 'unknown'}
+
             Analyze this image with brutal practicality.
             Return only JSON.
             Focus on:
             - what the object/scene actually is
-            - what story role this image could play
+            - what story role this image could play in a grounded home-reuse reel
             - obvious quality issues that will hurt generation or composition
-            - whether this is better as an establishing shot, detail shot, or reveal shot
+            - whether this is better as an establishing shot, detail shot, reveal shot, or proof-of-fit shot
             """
         ).strip()
         debug(
@@ -408,6 +659,13 @@ def interpret_images(
         )
         payload["file_id"] = asset.file_id
         payload["path"] = asset.path
+        payload["file_name"] = asset.file_name or asset_path.name
+        payload["capture_hint"] = {
+            "moment_label": asset.moment_label,
+            "cinematic_role": asset.cinematic_role,
+            "best_future_use": asset.best_future_use,
+            "score_0_to_100": asset.score_0_to_100,
+        }
         results.append(payload)
         logger.record_step(
             name=f"interpret_{asset_path.name}",
@@ -427,6 +685,7 @@ def brainstorm_ideas(
     client: Any,
     brief: str,
     interpretations: List[Dict[str, Any]],
+    bundle_context: Dict[str, Any],
     out_dir: Path,
     logger: RunLogger,
     model: str,
@@ -441,6 +700,13 @@ def brainstorm_ideas(
 
         Available interpreted assets:
         {json.dumps(interpretations, indent=2)}
+
+        Capture handoff metadata:
+        {json.dumps({
+            "story_seed": bundle_context.get("story_seed"),
+            "shot_manifest": bundle_context.get("shot_manifest"),
+            "idea_text": bundle_context.get("idea_text"),
+        }, indent=2)}
 
         Produce 5 ideas only.
         Constraints:
@@ -471,6 +737,7 @@ def plan_storyboard(
     interpretations: List[Dict[str, Any]],
     chosen_idea: Dict[str, Any],
     assets: List[MediaAsset],
+    bundle_context: Dict[str, Any],
     target_duration_sec: int,
     out_dir: Path,
     logger: RunLogger,
@@ -494,11 +761,19 @@ def plan_storyboard(
         Image interpretations:
         {json.dumps(interpretations, indent=2)}
 
+        Capture handoff metadata:
+        {json.dumps({
+            "story_seed": bundle_context.get("story_seed"),
+            "shot_manifest": bundle_context.get("shot_manifest"),
+            "idea_text": bundle_context.get("idea_text"),
+        }, indent=2)}
+
         Rules:
         - total duration must be {target_duration_sec} seconds exactly after normalization
         - 4 to 6 scenes
         - prefer existing assets when possible
         - use generated_image only for scenes that truly need it
+        - hero and fit-proof shots should stay grounded in the real capture when possible
         - narration should fit a {target_duration_sec}-second voiceover, so keep it concise
         - image_prompt must be production-ready and avoid text artifacts, watermark, gibberish, ugly anatomy, low detail
         - asset_ref must match a real file_id when asset_mode is existing_image or existing_clip
@@ -553,6 +828,53 @@ def normalize_storyboard(story: Dict[str, Any], assets: List[MediaAsset], target
     story["target_duration_sec"] = target_duration_sec
 
 
+def extract_response_parts(response: Any) -> List[Any]:
+    direct_parts = list(getattr(response, "parts", []) or [])
+    if direct_parts:
+        return direct_parts
+    parts: List[Any] = []
+    for candidate in getattr(response, "candidates", []) or []:
+        parts.extend(list(getattr(getattr(candidate, "content", None), "parts", []) or []))
+    return parts
+
+
+def choose_scene_fallback_asset(scene: Dict[str, Any], image_assets: List[MediaAsset]) -> Optional[MediaAsset]:
+    if not image_assets:
+        return None
+    scene_text = " ".join(
+        [
+            str(scene.get("purpose") or ""),
+            str(scene.get("narration") or ""),
+            str(scene.get("image_prompt") or ""),
+        ]
+    ).lower()
+
+    def score(asset: MediaAsset) -> int:
+        value = int(asset.score_0_to_100 or 0)
+        role = (asset.cinematic_role or "").lower()
+        name = (asset.file_name or Path(asset.path).name).lower()
+        if role == "hero_object":
+            value += 35
+        if role == "fit_check" and any(token in scene_text for token in ["fit", "proof", "place", "shelf", "desk"]):
+            value += 28
+        if role == "room_opportunity" and any(token in scene_text for token in ["room", "space", "corner", "opportunity", "before"]):
+            value += 24
+        if role == "detail_texture" and any(token in scene_text for token in ["detail", "texture", "close", "material"]):
+            value += 18
+        if "hero" in name:
+            value += 12
+        if name.startswith("best_01"):
+            value += 10
+        return value
+
+    return sorted(image_assets, key=score, reverse=True)[0]
+
+
+def save_scene_image_result_files(out_dir: Path, generated_paths: Dict[str, str], scene_results: List[Dict[str, Any]]) -> None:
+    dump_json(out_dir / "generated_image_map.json", generated_paths)
+    dump_json(out_dir / "generated_image_results.json", scene_results)
+
+
 def generate_scene_images(
     client: Any,
     story: Dict[str, Any],
@@ -561,11 +883,15 @@ def generate_scene_images(
     logger: RunLogger,
     model: str,
     size: Tuple[int, int],
-) -> Dict[str, str]:
+) -> Tuple[Dict[str, str], List[Dict[str, Any]]]:
     scene_dir = ensure_dir(out_dir / "generated_images")
     generated_paths: Dict[str, str] = {}
+    scene_results: List[Dict[str, Any]] = []
 
-    reference_images = [a for a in assets if a.kind == "image"][:2]
+    reference_images = sorted(
+        [a for a in assets if a.kind == "image"],
+        key=lambda asset: (asset.cinematic_role != "hero_object", -(asset.score_0_to_100 or 0), asset.file_id),
+    )[:2]
     ref_paths = [Path(a.path) for a in reference_images]
     ref_parts = [media_part_from_file(path) for path in ref_paths]
     aspect_ratio = aspect_ratio_for_size(size)
@@ -577,67 +903,196 @@ def generate_scene_images(
     for scene in story["scenes"]:
         if scene["asset_mode"] != "generated_image":
             continue
+
+        scene_id = scene["scene_id"]
         started = time.time()
         prompt = scene["image_prompt"]
+        prompt_compact = " ".join(prompt.split())
+        scene_result: Dict[str, Any] = {
+            "scene_id": scene_id,
+            "status": "pending",
+            "path": None,
+            "attempts": [],
+        }
+
+        cached_path = existing_generated_file(scene_dir, scene_id)
+        if cached_path and cached_path.exists():
+            generated_paths[scene_id] = str(cached_path)
+            scene_result.update({
+                "status": "reused_generated",
+                "path": str(cached_path),
+            })
+            scene_results.append(scene_result)
+            debug(f"Reusing previously generated image for {scene_id} -> {cached_path.name}")
+            save_scene_image_result_files(out_dir, generated_paths, scene_results)
+            logger.record_step(
+                f"generate_image_{scene_id}",
+                started,
+                {
+                    "model": model,
+                    "status": scene_result["status"],
+                    "path": cached_path.name,
+                    "reference_files": [path.name for path in ref_paths],
+                    "aspect_ratio": aspect_ratio,
+                },
+            )
+            continue
+
         debug(
-            f"Generating image for {scene['scene_id']} | prompt_chars={len(prompt)} | "
+            f"Generating image for {scene_id} | prompt_chars={len(prompt)} | "
             f"ref_count={len(ref_paths)} | ref_files={[path.name for path in ref_paths]} | "
             f"approx_payload={format_bytes(approx_payload_bytes(prompt, ref_paths))}"
         )
-        response = client.models.generate_content(
-            model=model,
-            contents=[prompt, *ref_parts],
-            config={
-                "response_modalities": ["TEXT", "IMAGE"],
-                "image_config": {"aspect_ratio": aspect_ratio},
-            },
-        )
+
+        ref_count_plan: List[int] = []
+        for count in [len(ref_parts), 1, 0]:
+            if count not in ref_count_plan and count <= len(ref_parts):
+                ref_count_plan.append(count)
+        if not ref_count_plan:
+            ref_count_plan = [0]
+
         image_saved = False
-        for index, part in enumerate(getattr(response, "parts", []) or []):
-            if getattr(part, "inline_data", None):
-                img = part.as_image()
-                image_path = scene_dir / f"{scene['scene_id']}_{index + 1}.png"
-                img.save(image_path)
-                generated_paths[scene["scene_id"]] = str(image_path)
-                debug(f"Saved generated image for {scene['scene_id']} -> {image_path.name}")
-                image_saved = True
-                break
+        last_error: Optional[Exception] = None
+
+        for ref_count in ref_count_plan:
+            used_ref_parts = ref_parts[:ref_count]
+            used_ref_files = [path.name for path in ref_paths[:ref_count]]
+            if ref_count == 0:
+                effective_prompt = (
+                    prompt_compact
+                    + "\nPreserve realism and composition continuity from the user capture. No text, logos, watermark, or UI."
+                )
+            else:
+                effective_prompt = prompt_compact
+
+            attempt_record = {
+                "ref_count": ref_count,
+                "ref_files": used_ref_files,
+                "status": "started",
+            }
+
+            def _call() -> Any:
+                return client.models.generate_content(
+                    model=model,
+                    contents=[effective_prompt, *used_ref_parts],
+                    config={
+                        "response_modalities": ["TEXT", "IMAGE"],
+                        "image_config": {"aspect_ratio": aspect_ratio},
+                    },
+                )
+
+            try:
+                response = retry_call(
+                    _call,
+                    op_name=f"generate_image[{scene_id}|refs={ref_count}]",
+                    max_attempts=4 if ref_count > 0 else 3,
+                    initial_delay_sec=2.0 if ref_count > 0 else 1.5,
+                    max_delay_sec=16.0,
+                )
+                parts = extract_response_parts(response)
+                for index, part in enumerate(parts):
+                    if getattr(part, "inline_data", None):
+                        img = part.as_image()
+                        image_path = scene_dir / f"{scene_id}_{index + 1}.png"
+                        img.save(image_path)
+                        generated_paths[scene_id] = str(image_path)
+                        scene_result.update({
+                            "status": "generated",
+                            "path": str(image_path),
+                            "used_ref_count": ref_count,
+                            "used_ref_files": used_ref_files,
+                        })
+                        attempt_record.update({
+                            "status": "ok",
+                            "path": image_path.name,
+                        })
+                        scene_result["attempts"].append(attempt_record)
+                        debug(f"Saved generated image for {scene_id} -> {image_path.name}")
+                        image_saved = True
+                        break
+                if image_saved:
+                    break
+                attempt_record.update({
+                    "status": "no_image",
+                    "error": "Model response contained no inline image.",
+                })
+                scene_result["attempts"].append(attempt_record)
+                debug(f"Model returned no inline image for {scene_id} with ref_count={ref_count}; trying safer path")
+            except Exception as exc:
+                last_error = exc
+                attempt_record.update({
+                    "status": "error",
+                    "error": shorten_error(exc),
+                })
+                scene_result["attempts"].append(attempt_record)
+                debug(
+                    f"Image generation path failed for {scene_id} with ref_count={ref_count}: "
+                    f"{shorten_error(exc)}"
+                )
+
         if not image_saved:
-            fallback_asset = reference_images[0] if reference_images else None
+            fallback_asset = choose_scene_fallback_asset(scene, [a for a in assets if a.kind == "image"])
             if not fallback_asset:
-                raise RuntimeError("Image generation returned no image and there is no fallback reference image.")
-            generated_paths[scene["scene_id"]] = fallback_asset.path
+                raise RuntimeError(
+                    f"Image generation failed for {scene_id} and there is no fallback reference image. "
+                    f"Last error: {shorten_error(last_error) if last_error else 'none'}"
+                )
+            generated_paths[scene_id] = fallback_asset.path
+            scene_result.update({
+                "status": "fallback_existing",
+                "path": fallback_asset.path,
+                "fallback_asset_file_id": fallback_asset.file_id,
+                "fallback_asset_name": Path(fallback_asset.path).name,
+            })
             debug(
-                f"No image returned for {scene['scene_id']}; using fallback reference image {Path(fallback_asset.path).name}"
+                f"Falling back to existing asset for {scene_id} -> {Path(fallback_asset.path).name} "
+                f"after generation issue: {shorten_error(last_error) if last_error else 'no image returned'}"
             )
+
+        scene_results.append(scene_result)
+        save_scene_image_result_files(out_dir, generated_paths, scene_results)
         logger.record_step(
-            f"generate_image_{scene['scene_id']}",
+            f"generate_image_{scene_id}",
             started,
             {
                 "model": model,
+                "status": scene_result["status"],
+                "path": Path(scene_result["path"]).name if scene_result.get("path") else "",
                 "prompt": prompt[:160],
                 "prompt_chars": len(prompt),
                 "reference_files": [path.name for path in ref_paths],
                 "aspect_ratio": aspect_ratio,
+                "attempt_count": len(scene_result["attempts"]),
             },
         )
 
-    dump_json(out_dir / "generated_image_map.json", generated_paths)
-    return generated_paths
+    save_scene_image_result_files(out_dir, generated_paths, scene_results)
+    return generated_paths, scene_results
 
 
 def judge_generated_images(
     client: Any,
     story: Dict[str, Any],
     generated_paths: Dict[str, str],
+    scene_image_results: List[Dict[str, Any]],
     out_dir: Path,
     logger: RunLogger,
     model: str,
 ) -> List[Dict[str, Any]]:
+    result_lookup = {item.get("scene_id"): item for item in scene_image_results}
     results: List[Dict[str, Any]] = []
     for scene in story["scenes"]:
         image_path = generated_paths.get(scene["scene_id"])
         if not image_path:
+            continue
+        scene_result = result_lookup.get(scene["scene_id"], {})
+        if scene_result.get("status") not in {"generated", "reused_generated"}:
+            results.append({
+                "scene_id": scene["scene_id"],
+                "path": image_path,
+                "skipped": True,
+                "reason": scene_result.get("status") or "not_generated",
+            })
             continue
         started = time.time()
         image_file = Path(image_path)
@@ -706,7 +1161,13 @@ def synthesize_tts(
         f"Synthesizing TTS | voice={voice_name} | speaking_rate={speaking_rate} | "
         f"text_chars={len(text)} | text_bytes={format_bytes(len(text.encode('utf-8')))}"
     )
-    response = client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
+    response = retry_call(
+        lambda: client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config),
+        op_name="synthesize_tts",
+        max_attempts=4,
+        initial_delay_sec=1.5,
+        max_delay_sec=12.0,
+    )
     out_path.write_bytes(response.audio_content)
     debug(f"Saved narration audio -> {out_path.name} ({format_bytes(file_size_bytes(out_path))})")
 
@@ -770,61 +1231,74 @@ def render_video(
     fps: int,
 ) -> Path:
     asset_lookup = {asset.file_id: asset for asset in assets}
-    visual_clips = []
-    for scene in story["scenes"]:
-        if scene["asset_mode"] == "generated_image":
-            asset_path = generated_paths[scene["scene_id"]]
-        else:
-            asset_path = asset_lookup[scene["asset_ref"]].path
-        visual_clips.append(build_scene_clip(scene, asset_path, size))
+    visual_clips: List[Any] = []
+    video: Optional[Any] = None
+    narration: Optional[Any] = None
+    background: Optional[Any] = None
+    final: Optional[Any] = None
+    try:
+        for scene in story["scenes"]:
+            if scene["asset_mode"] == "generated_image":
+                asset_path = generated_paths[scene["scene_id"]]
+            else:
+                asset_path = asset_lookup[scene["asset_ref"]].path
+            visual_clips.append(build_scene_clip(scene, asset_path, size))
 
-    video = concatenate_videoclips(visual_clips, method="compose")
-    narration = AudioFileClip(str(narration_path))
+        video = concatenate_videoclips(visual_clips, method="compose")
+        narration = AudioFileClip(str(narration_path))
 
-    video_duration = float(video.duration)
-    audio_duration = float(narration.duration)
-    debug(
-        f"Render prep | video_duration={video_duration:.2f}s | audio_duration={audio_duration:.2f}s | "
-        f"fps={fps} | size={size[0]}x{size[1]}"
-    )
-    if audio_duration > video_duration:
-        delta = audio_duration - video_duration
-        last_scene = story["scenes"][-1]
-        last_path = generated_paths.get(last_scene["scene_id"])
-        if not last_path and last_scene["asset_ref"]:
-            last_path = asset_lookup[last_scene["asset_ref"]].path
-        extension = build_scene_clip({**last_scene, "duration_sec": delta}, last_path, size)
-        video = concatenate_videoclips([video, extension], method="compose")
-        debug(f"Extended last scene by {delta:.2f}s to match narration audio")
+        video_duration = float(video.duration)
+        audio_duration = float(narration.duration)
+        debug(
+            f"Render prep | video_duration={video_duration:.2f}s | audio_duration={audio_duration:.2f}s | "
+            f"fps={fps} | size={size[0]}x{size[1]}"
+        )
+        if audio_duration > video_duration:
+            delta = audio_duration - video_duration
+            last_scene = story["scenes"][-1]
+            last_path = generated_paths.get(last_scene["scene_id"])
+            if not last_path and last_scene["asset_ref"]:
+                last_path = asset_lookup[last_scene["asset_ref"]].path
+            extension = build_scene_clip({**last_scene, "duration_sec": delta}, last_path, size)
+            visual_clips.append(extension)
+            video = concatenate_videoclips([video, extension], method="compose")
+            debug(f"Extended last scene by {delta:.2f}s to match narration audio")
 
-    background = ColorClip(size=size, color=(0, 0, 0), duration=video.duration)
-    final = CompositeVideoClip([background, video.with_position("center")], size=size).with_audio(narration)
-    out_path = out_dir / "final_story.mp4"
-    debug(f"Writing final video -> {out_path} | codec=libx264 | audio_codec=aac")
-    final.write_videofile(
-        str(out_path),
-        fps=fps,
-        codec="libx264",
-        audio_codec="aac",
-        threads=max(1, os.cpu_count() or 1),
-        logger="bar",
-    )
-
-    narration.close()
-    final.close()
-    video.close()
-    for clip in visual_clips:
-        clip.close()
-    debug(f"Saved final video -> {out_path.name} ({format_bytes(file_size_bytes(out_path))})")
-    return out_path
+        background = ColorClip(size=size, color=(0, 0, 0), duration=video.duration)
+        final = CompositeVideoClip([background, video.with_position("center")], size=size).with_audio(narration)
+        out_path = out_dir / "final_story.mp4"
+        debug(f"Writing final video -> {out_path} | codec=libx264 | audio_codec=aac")
+        final.write_videofile(
+            str(out_path),
+            fps=fps,
+            codec="libx264",
+            audio_codec="aac",
+            threads=max(1, os.cpu_count() or 1),
+            logger="bar",
+        )
+        debug(f"Saved final video -> {out_path.name} ({format_bytes(file_size_bytes(out_path))})")
+        return out_path
+    finally:
+        for clip in visual_clips:
+            try:
+                clip.close()
+            except Exception:
+                pass
+        for clip in [final, background, video, narration]:
+            if clip is None:
+                continue
+            try:
+                clip.close()
+            except Exception:
+                pass
 
 
 # ---------- CLI ----------
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Validate a local multimodal 30-second story PoC on Google Cloud.")
-    parser.add_argument("--input", required=True, help="Directory with input photos and optional short clips.")
+    parser = argparse.ArgumentParser(description="Validate a multimodal short-story PoC on Google Cloud from a local folder or gs:// basket.")
+    parser.add_argument("--input", required=True, help="Local bundle directory or gs:// bucket/prefix with collected files and metadata.")
     parser.add_argument("--brief-file", help="Optional .txt file with the project or story brief.")
     parser.add_argument("--out-dir", default="output", help="Output directory.")
     parser.add_argument("--project", default=os.getenv("PROJECT_ID"), help="Google Cloud project id.")
@@ -847,21 +1321,20 @@ def main() -> None:
     width, height = [int(x) for x in args.size.lower().split("x", 1)]
     size = (width, height)
 
-    media_dir = Path(args.input)
     out_dir = ensure_dir(Path(args.out_dir))
-    brief = read_text(Path(args.brief_file) if args.brief_file else None)
+    base_brief = read_text(Path(args.brief_file) if args.brief_file else None)
     logger = RunLogger(out_dir)
 
     debug(f"Run config | target_seconds={args.target_seconds} | size={width}x{height} | fps={args.fps}")
     if args.brief_file:
         debug(f"Using brief file: {args.brief_file}")
 
-    if not media_dir.exists():
-        raise SystemExit(f"Media directory does not exist: {media_dir}")
+    bundle_dir, bundle_context, source_info = prepare_input_bundle(args.input, out_dir, args.project)
+    brief = compose_pipeline_brief(base_brief, bundle_context)
 
-    assets = discover_media(media_dir)
+    assets = discover_media(bundle_dir, bundle_context.get("file_hints"))
     if not assets:
-        raise SystemExit("No supported media found. Add at least one image to the media directory.")
+        raise SystemExit("No supported media found. Add at least one image to the input bundle.")
     dump_json(out_dir / "media_inventory.json", [asset.__dict__ for asset in assets])
     debug(f"Media inventory written -> {out_dir / 'media_inventory.json'}")
 
@@ -883,6 +1356,7 @@ def main() -> None:
         client=client,
         brief=brief,
         interpretations=interpretations,
+        bundle_context=bundle_context,
         out_dir=out_dir,
         logger=logger,
         model=args.brainstorm_model,
@@ -899,6 +1373,7 @@ def main() -> None:
         interpretations=interpretations,
         chosen_idea=chosen_idea,
         assets=assets,
+        bundle_context=bundle_context,
         target_duration_sec=args.target_seconds,
         out_dir=out_dir,
         logger=logger,
@@ -911,7 +1386,7 @@ def main() -> None:
             f"duration={scene['duration_sec']}s"
         )
 
-    generated_paths = generate_scene_images(
+    generated_paths, scene_image_results = generate_scene_images(
         client=client,
         story=story,
         assets=assets,
@@ -921,7 +1396,7 @@ def main() -> None:
         size=size,
     )
     if generated_paths:
-        debug(f"Generated image files: {[Path(path).name for path in generated_paths.values()]}")
+        debug(f"Resolved scene image files: {[Path(path).name for path in generated_paths.values()]}")
     else:
         debug("No generated images were needed for this storyboard.")
 
@@ -929,6 +1404,7 @@ def main() -> None:
         client=client,
         story=story,
         generated_paths=generated_paths,
+        scene_image_results=scene_image_results,
         out_dir=out_dir,
         logger=logger,
         model=args.judge_model,
@@ -972,11 +1448,16 @@ def main() -> None:
     print("Rendering finished")
 
     summary = {
+        "input_source": source_info,
+        "local_input_dir": str(bundle_dir),
         "output_video": str(final_video),
         "storyboard": str(out_dir / "storyboard.json"),
         "ideas": str(out_dir / "ideas.json"),
         "metrics": str(out_dir / "metrics.json"),
         "narration": str(narration_path),
+        "bundle_context": str(out_dir / "bundle_context.json"),
+        "generated_image_results": str(out_dir / "generated_image_results.json"),
+        "generated_image_qc": str(out_dir / "generated_image_qc.json"),
     }
     dump_json(out_dir / "run_summary.json", summary)
     logger.save()
