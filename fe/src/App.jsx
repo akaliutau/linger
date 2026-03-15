@@ -176,11 +176,6 @@ function summarizeTrack(track) {
   }
 }
 
-function iconState(score) {
-  if (score >= 84) return 'on'
-  if (score >= 62) return 'mid'
-  return 'off'
-}
 
 function IntroScreen({ onStart, config, loadingConfig }) {
   return (
@@ -203,7 +198,7 @@ function IntroScreen({ onStart, config, loadingConfig }) {
   )
 }
 
-function TopHud({ score, kept, framesSeen, guide, latencyAvg, mode }) {
+function TopHud({ score, kept, framesSeen, guide, latencyAvg }) {
   return (
     <div className="hud top">
       <div className={`score-pill ${scoreTone(score)}`}>
@@ -214,11 +209,6 @@ function TopHud({ score, kept, framesSeen, guide, latencyAvg, mode }) {
         <MiniStat label="kept" value={`${kept}`} />
         <MiniStat label="frames" value={`${framesSeen}`} />
         <MiniStat label="avg ms" value={latencyAvg ? `${latencyAvg}` : '—'} />
-      </div>
-      <div className="hud-icons">
-        <HudIcon label="sharp" state={iconState(score)} />
-        <HudIcon label="story" state={kept > 0 ? 'on' : iconState(score)} />
-        <HudIcon label="pace" state={mode === 'harvesting' ? 'on' : 'mid'} />
       </div>
       <div className="guide-pill">{guide}</div>
     </div>
@@ -234,14 +224,6 @@ function MiniStat({ label, value }) {
   )
 }
 
-function HudIcon({ label, state }) {
-  return (
-    <div className={`hud-icon ${state}`}>
-      <span className="dot" />
-      <span>{label}</span>
-    </div>
-  )
-}
 
 function CameraScreen({
   videoRef,
@@ -266,7 +248,7 @@ function CameraScreen({
       <div className="camera-overlay top-gradient" />
       <div className="camera-overlay bottom-gradient" />
 
-      <TopHud score={score} kept={kept} framesSeen={framesSeen} latencyAvg={latencyAvg} guide={guide} mode={mode} />
+      <TopHud score={score} kept={kept} framesSeen={framesSeen} latencyAvg={latencyAvg} guide={guide} />
 
       <div className="hero-thumb-wrap">
         {heroThumb ? <img src={heroThumb} alt="Hero still" className="hero-thumb" /> : <div className="hero-thumb placeholder" />}
@@ -294,8 +276,6 @@ function CameraScreen({
 
 function ReviewScreen({ heroUrl, analysis, generating, onGenerate, onReset, finalizeInfo, bestFrames }) {
   const hook = finalizeInfo?.story_seed?.hook || analysis?.story_signal || 'A grounded second-life idea built from the best room evidence.'
-  const strategy = finalizeInfo?.story_seed?.generation_strategy || ''
-  const ticket = finalizeInfo?.ticket || null
   const shownFrames = (
     finalizeInfo?.shot_manifest ||
     finalizeInfo?.story_seed?.selected_frame_items ||
@@ -319,7 +299,6 @@ function ReviewScreen({ heroUrl, analysis, generating, onGenerate, onReset, fina
           <div className="idea-box">
             <div className="idea-label">Idea</div>
             <p>{hook}</p>
-            {strategy ? <p className="muted">{strategy}</p> : null}
           </div>
 
           {!!shownFrames.length && (
@@ -336,25 +315,11 @@ function ReviewScreen({ heroUrl, analysis, generating, onGenerate, onReset, fina
               ))}
             </div>
           )}
-
-          {finalizeInfo?.pipeline_result?.status && (
+          {finalizeInfo?.share_url && (
             <div className="pipeline-box">
-              <strong>Story pipeline</strong>
-              <span>{finalizeInfo.pipeline_result.status}</span>
-              {finalizeInfo?.basket_url ? <small>{finalizeInfo.basket_url}</small> : null}
-            </div>
-          )}
-
-          {ticket && (
-            <div className="pipeline-box">
-              <strong>Ticket</strong>
-              <span>{ticket.ticket_id}</span>
-              <small>{ticket.status}</small>
-              {ticket.download_url ? (
-                <a href={ticket.download_url} target="_blank" rel="noreferrer">Download mp4</a>
-              ) : (
-                <small>{ticket.submit_url || 'Mock submission logged in backend.'}</small>
-              )}
+              <strong>Your reel is on the way</strong>
+              <span>The video will be rendered in 2–3 min.</span>
+              <a href={finalizeInfo.share_url} target="_blank" rel="noreferrer">Open share link</a>
             </div>
           )}
 
@@ -1044,35 +1009,25 @@ export default function App() {
       const form = new FormData()
       form.append('session_id', sessionId)
       form.append('enough_moment', 'Collection ready')
-
       const finalized = await fetchJson('/api/session/finalize', { method: 'POST', body: form }, FINALIZE_TIMEOUT_MS)
-      const state = await fetchJson(`/api/session/${encodeURIComponent(sessionId)}`, {}, 15000)
-
-      const mergedFinalize = {
-        ...(finalized.finalized || {}),
-        story_seed: state.story_seed || finalized.finalized?.story_seed || null,
-      }
+      const mergedFinalize = finalized.finalized || {}
 
       setFinalizeInfo(mergedFinalize)
       const displayFrames =
         mergedFinalize?.shot_manifest ||
         mergedFinalize?.story_seed?.selected_frame_items ||
-        (state.best_frames || []).slice(0, 3) ||
-        (state.fallback_top_frame ? [state.fallback_top_frame] : [])
+        bestFrames
       setBestFrames(Array.isArray(displayFrames) ? displayFrames.slice(0, 3) : [])
       pushEvent('finalized', {
         basketAssets: finalized.finalized?.basket_assets?.length || 0,
         selectedCount: finalized.finalized?.selected_count || 0,
         usedFallbackFrame: Boolean(finalized.finalized?.used_fallback_frame),
       })
-
-      setStatus(
-        finalized.finalized?.ticket?.status === 'queued'
-          ? 'Story queued. Ticket ready.'
-          : finalized.finalized?.pipeline_result?.status === 'finished'
-            ? 'Story started.'
-            : 'Bundle ready for video pipeline.'
-      )
+      setStatus(mergedFinalize?.message || 'Your reel is on the way.')
+      setGuide('The video will be rendered in 2–3 min.')
+      if (mergedFinalize?.share_url && navigator?.clipboard?.writeText) {
+        navigator.clipboard.writeText(mergedFinalize.share_url).catch(() => {})
+      }
     } catch (err) {
       const message = shortError(err)
       setStatus(message)

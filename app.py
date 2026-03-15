@@ -18,9 +18,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import dotenv
+import google.auth
 from fastapi import FastAPI, File, Form, HTTPException, Request, WebSocket, WebSocketDisconnect, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from google.auth.transport.requests import AuthorizedSession
 from starlette.concurrency import run_in_threadpool
 try:
     from google import genai
@@ -77,11 +79,11 @@ ENABLE_LIVE_AGENT = os.getenv("ENABLE_LIVE_AGENT", "true").lower() in {"1", "tru
 KEEP_BEST_LIMIT = int(os.getenv("KEEP_BEST_LIMIT", "10"))
 MIN_KEEP_SCORE = int(os.getenv("MIN_KEEP_SCORE", "74"))
 MAX_RECENT_UPLOADS = int(os.getenv("MAX_RECENT_UPLOADS", "24"))
-VIDEO_PIPELINE_SCRIPT = os.getenv("VIDEO_PIPELINE_SCRIPT", "")
-VIDEO_PIPELINE_BRIEF_FILE = os.getenv("VIDEO_PIPELINE_BRIEF_FILE", "")
-VIDEO_PIPELINE_EXTRA_ARGS = os.getenv("VIDEO_PIPELINE_EXTRA_ARGS", "")
-VIDEO_PIPELINE_TRIGGER_MODE = os.getenv("VIDEO_PIPELINE_TRIGGER_MODE", "mock").lower()
-VIDEO_PIPELINE_SUBMIT_URL = os.getenv("VIDEO_PIPELINE_SUBMIT_URL", "mock://linger/video-pipeline")
+VIDEO_JOB_NAME = os.getenv("VIDEO_JOB_NAME", "linger-video-job")
+VIDEO_REELS_PREFIX = os.getenv("VIDEO_REELS_PREFIX", "reels")
+VIDEO_SHARE_PREFIX = os.getenv("VIDEO_SHARE_PREFIX", "story")
+APP_BASE_URL = os.getenv("APP_BASE_URL", "").rstrip("/")
+PLACEHOLDER_VIDEO_FILE = os.getenv("PLACEHOLDER_VIDEO_FILE", str(BASE_DIR / "static" / "generating_reel.mp4"))
 DEBUG_LOG_PROMPTS = os.getenv("DEBUG_LOG_PROMPTS", "true").lower() in {"1", "true", "yes", "on"}
 GUIDE_TTS_ENABLED = os.getenv("GUIDE_TTS_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 GUIDE_TTS_LANGUAGE_CODE = os.getenv("GUIDE_TTS_LANGUAGE_CODE", "en-US")
@@ -100,7 +102,7 @@ ROLE_PRIORITY = (
     "detail_texture",
     "problem_area",
 )
-MODEL_TIMEOUT_SEC = int(os.getenv("MODEL_TIMEOUT_SEC", "30"))
+MODEL_TIMEOUT_SEC = int(os.getenv("MODEL_TIMEOUT_SEC", "60"))
 DEBUG_EVENT_LIMIT = int(os.getenv("DEBUG_EVENT_LIMIT", "200"))
 REACT_DIST_DIR_ENV = os.getenv("REACT_DIST_DIR", "")
 
@@ -1162,88 +1164,117 @@ def upload_basket_file(session_id: str, basket_prefix: str, local_path: Path, me
     return upload.__dict__
 
 
-def make_mock_ticket(session_id: str, basket_url: str) -> Dict[str, Any]:
-    ticket_id = f"linger-job-{uuid.uuid4().hex[:10]}"
-    submit_url = f"{VIDEO_PIPELINE_SUBMIT_URL.rstrip('/')}/{ticket_id}" if VIDEO_PIPELINE_SUBMIT_URL else ticket_id
-    download_url = f"{submit_url}/result.mp4" if submit_url.startswith(("http://", "https://")) else None
-    return {
-        "ticket_id": ticket_id,
-        "status": "queued",
-        "submit_url": submit_url,
-        "basket_url": basket_url,
-        "download_url": download_url,
-        "message": "Mock ticket created. Trigger the downstream pipeline with basket_url.",
-        "created_at": utc_iso(),
-    }
+def app_public_url(path: str, request: Optional[Request] = None) -> str:
+    clean = path if path.startswith("/") else f"/{path}"
+    if APP_BASE_URL:
+        return f"{APP_BASE_URL}{clean}"
+    if request is not None:
+        return f"{str(request.base_url).rstrip('/')}{clean}"
+    return clean
 
 
-def trigger_video_pipeline(
-    *,
-    session_id: str,
-    basket_url: str,
-    basket_root: Path,
-    export_root: Path,
-    story_seed: Dict[str, Any],
-) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    ticket = make_mock_ticket(session_id, basket_url)
-    pipeline_result: Dict[str, Any] = {
-        "status": "queued",
-        "mode": VIDEO_PIPELINE_TRIGGER_MODE,
-        "basket_url": basket_url,
-        "submit_url": ticket["submit_url"],
-        "message": ticket["message"],
-    }
+def reels_prefix(session_id: str) -> str:
+    return f"{VIDEO_REELS_PREFIX.rstrip('/')}/{session_id}"
 
-    submit_payload = {
-        "session_id": session_id,
-        "ticket_id": ticket["ticket_id"],
-        "basket_url": basket_url,
-        "story_seed": {
-            "title": story_seed.get("title"),
-            "hook": story_seed.get("hook"),
-            "visual_style": story_seed.get("visual_style"),
-            "generation_strategy": story_seed.get("generation_strategy"),
+
+def story_share_path(session_id: str) -> str:
+    return f"/{VIDEO_SHARE_PREFIX.strip('/')}/{session_id}"
+
+
+def render_object_name(session_id: str, filename: str) -> str:
+    return f"{reels_prefix(session_id)}/{filename}"
+
+
+def upload_placeholder_video(session_id: str) -> Dict[str, Any]:
+    placeholder_path = Path(PLACEHOLDER_VIDEO_FILE)
+    if not placeholder_path.is_absolute():
+        placeholder_path = (BASE_DIR / placeholder_path).resolve()
+    if not placeholder_path.exists():
+        raise RuntimeError(f"Placeholder video file not found: {placeholder_path}")
+
+    payload = placeholder_path.read_bytes()
+    asset = STORAGE.store_bytes(
+        prefix=reels_prefix(session_id),
+        filename="placeholder.mp4",
+        data=payload,
+        width=720,
+        height=1280,
+        metadata={
+            "session_id": session_id,
+            "kind": "placeholder_video",
+            "created_at": utc_iso(),
         },
+        content_type="video/mp4",
+    )
+    return asset.__dict__
+
+
+def gcs_object_exists(object_name: str) -> bool:
+    if STORAGE.mode != "gcs":
+        local_path = LOCAL_UPLOAD_DIR / object_name
+        return local_path.exists()
+    blob = STORAGE.bucket.blob(object_name)
+    return blob.exists()
+
+
+def current_story_video_path(session_id: str) -> str:
+    final_name = render_object_name(session_id, "final_story.mp4")
+    placeholder_name = render_object_name(session_id, "placeholder.mp4")
+    return final_name if gcs_object_exists(final_name) else placeholder_name
+
+
+def current_story_video_url(session_id: str, request: Optional[Request] = None) -> str:
+    return app_public_url(f"/api/story/{session_id}/video.mp4", request)
+
+
+def submit_video_job(*, session_id: str, basket_url: str, story_seed: Dict[str, Any]) -> Dict[str, Any]:
+    if not basket_url.startswith("gs://"):
+        raise RuntimeError("Real video job requires STORAGE_MODE=gcs and a gs:// basket_url")
+    if not BUCKET_NAME:
+        raise RuntimeError("BUCKET_NAME is required for video job submission")
+
+    creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+    authed = AuthorizedSession(creds)
+
+    output_uri = f"gs://{BUCKET_NAME}/{reels_prefix(session_id)}"
+    run_url = f"https://run.googleapis.com/v2/projects/{PROJECT_ID}/locations/{REGION}/jobs/{VIDEO_JOB_NAME}:run"
+    body = {
+        "overrides": {
+            "containerOverrides": [
+                {
+                    "env": [
+                        {"name": "SESSION_ID", "value": session_id},
+                        {"name": "INPUT_URI", "value": basket_url},
+                        {"name": "OUTPUT_GCS_URI", "value": output_uri},
+                        {"name": "PROJECT_ID", "value": PROJECT_ID},
+                        {"name": "REGION", "value": REGION},
+                        {"name": "STORY_HOOK", "value": str(story_seed.get("hook") or "")[:500]},
+                    ]
+                }
+            ]
+        }
     }
 
-    if VIDEO_PIPELINE_TRIGGER_MODE == "subprocess" and VIDEO_PIPELINE_SCRIPT:
-        cmd = [
-            sys.executable,
-            VIDEO_PIPELINE_SCRIPT,
-            "--input",
-            basket_url,
-            "--out-dir",
-            str(export_root / "render_output"),
-        ]
-        if VIDEO_PIPELINE_BRIEF_FILE:
-            cmd.extend(["--brief-file", VIDEO_PIPELINE_BRIEF_FILE])
-        if VIDEO_PIPELINE_EXTRA_ARGS:
-            cmd.extend(shlex.split(VIDEO_PIPELINE_EXTRA_ARGS))
-        try:
-            started = time.time()
-            proc = subprocess.run(cmd, cwd=str(BASE_DIR), capture_output=True, text=True, timeout=3600)
-            pipeline_result = {
-                "status": "finished" if proc.returncode == 0 else "failed",
-                "mode": "subprocess",
-                "returncode": proc.returncode,
-                "latency_sec": round(time.time() - started, 2),
-                "stdout_tail": proc.stdout[-3000:],
-                "stderr_tail": proc.stderr[-3000:],
-                "command": cmd,
-                "basket_url": basket_url,
-                "submit_payload": submit_payload,
-            }
-        except Exception as exc:
-            pipeline_result = {
-                "status": "failed",
-                "mode": "subprocess",
-                "error": str(exc),
-                "command": cmd,
-                "basket_url": basket_url,
-                "submit_payload": submit_payload,
-            }
-        ticket["status"] = pipeline_result["status"]
-        return ticket, pipeline_result
+    started = time.time()
+    resp = authed.post(run_url, json=body, timeout=20)
+    resp.raise_for_status()
+    data = resp.json()
+    json_log(
+        "video_job_submitted",
+        session_id=session_id,
+        job_name=VIDEO_JOB_NAME,
+        latency_ms=round((time.time() - started) * 1000),
+        operation_name=data.get("name"),
+        basket_url=basket_url,
+        output_uri=output_uri,
+    )
+    return {
+        "status": "queued",
+        "job_name": VIDEO_JOB_NAME,
+        "operation_name": data.get("name"),
+        "submitted_at": utc_iso(),
+        "output_uri": output_uri,
+    }
 
     json_log(
         "video_pipeline_submit_mock",
@@ -1311,9 +1342,11 @@ async def api_config() -> Dict[str, Any]:
         "enable_live_agent": ENABLE_LIVE_AGENT,
         "guide_tts_enabled": GUIDE_TTS_ENABLED and texttospeech is not None,
         "guide_tts_voice": GUIDE_TTS_VOICE_NAME,
-        "video_pipeline_script": bool(VIDEO_PIPELINE_SCRIPT),
-        "video_pipeline_trigger_mode": VIDEO_PIPELINE_TRIGGER_MODE,
-        "video_pipeline_submit_url": VIDEO_PIPELINE_SUBMIT_URL,
+        "video_job_name": VIDEO_JOB_NAME,
+        "video_reels_prefix": VIDEO_REELS_PREFIX,
+        "video_share_prefix": VIDEO_SHARE_PREFIX,
+        "app_base_url": APP_BASE_URL or None,
+        "placeholder_video_file": PLACEHOLDER_VIDEO_FILE,
         "react_dist": str(REACT_DIST_DIR) if REACT_DIST_DIR else None,
         "model_timeout_sec": MODEL_TIMEOUT_SEC,
         "auto_stop_keep_count": AUTO_STOP_KEEP_COUNT,
@@ -1685,7 +1718,7 @@ async def api_session_state(session_id: str) -> Dict[str, Any]:
 
 
 @app.post("/api/session/finalize")
-async def api_session_finalize(session_id: str = Form(...), enough_moment: str = Form("enough moment")) -> Dict[str, Any]:
+async def api_session_finalize(request: Request, session_id: str = Form(...), enough_moment: str = Form("enough moment")) -> Dict[str, Any]:
     session_id = slugify(session_id)
     state = STORE.get_or_create(session_id)
     if not state.get("stage1"):
@@ -1844,11 +1877,11 @@ async def api_session_finalize(session_id: str = Form(...), enough_moment: str =
     if summary_upload is not None:
         basket_assets.append(summary_upload)
 
-    ticket, pipeline_result = trigger_video_pipeline(
+    placeholder_asset = upload_placeholder_video(session_id)
+    share_url = app_public_url(story_share_path(session_id), request)
+    job = submit_video_job(
         session_id=session_id,
         basket_url=basket_url,
-        basket_root=basket_root,
-        export_root=export_root,
         story_seed=story_seed,
     )
 
@@ -1862,8 +1895,6 @@ async def api_session_finalize(session_id: str = Form(...), enough_moment: str =
         "basket_url": basket_url,
         "basket_root": str(basket_root),
         "shot_manifest": shot_manifest,
-        "pipeline_result": pipeline_result,
-        "ticket": ticket,
         "export_root": str(export_root),
         "enough_moment": enough_moment,
         "selected_count": len(shot_manifest),
@@ -1871,6 +1902,12 @@ async def api_session_finalize(session_id: str = Form(...), enough_moment: str =
         "used_fallback_frame": used_fallback_frame,
         "story_seed": story_seed,
         "finalized_at": utc_iso(),
+        "share_url": share_url,
+        "story_video_url": current_story_video_url(session_id, request),
+        "placeholder_asset": placeholder_asset,
+        "job": job,
+        "status": "queued",
+        "message": "The video will be rendered in 2–3 min.",
     }
     STORE.persist(session_id)
     await STORE.broadcast(session_id, {"type": "finalized", "finalized": state["finalized"]})
@@ -1884,3 +1921,60 @@ async def api_session_finalize(session_id: str = Form(...), enough_moment: str =
         "session_id": session_id,
         "finalized": state["finalized"],
     }
+
+
+@app.get(f"/{VIDEO_SHARE_PREFIX.strip('/')}/{{session_id}}", response_class=HTMLResponse)
+async def story_share_page(session_id: str) -> HTMLResponse:
+    session_id = slugify(session_id)
+    video_url = current_story_video_url(session_id)
+    html = f"""
+    <!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Linger reel</title>
+        <style>
+          body {{ font-family: system-ui, sans-serif; margin: 0; background: #0f1115; color: white; }}
+          .wrap {{ max-width: 520px; margin: 0 auto; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }}
+          .card {{ width: 100%; background: #171a21; border-radius: 18px; padding: 20px; box-sizing: border-box; }}
+          h1 {{ font-size: 20px; margin: 0 0 8px; }}
+          p {{ color: #c8ccd4; margin: 0 0 16px; line-height: 1.4; }}
+          video {{ width: 100%; border-radius: 14px; background: black; }}
+        </style>
+      </head>
+      <body>
+        <div class="wrap">
+          <div class="card">
+            <h1>Your reel is on the way</h1>
+            <p>The video will be rendered in 2–3 min.</p>
+            <video controls playsinline preload="metadata" src="{video_url}"></video>
+          </div>
+        </div>
+      </body>
+    </html>
+    """
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/story/{session_id}/video.mp4")
+async def api_story_video(session_id: str):
+    session_id = slugify(session_id)
+    object_name = current_story_video_path(session_id)
+
+    if STORAGE.mode == "local":
+        local_path = LOCAL_UPLOAD_DIR / object_name
+        if not local_path.exists():
+            raise HTTPException(status_code=404, detail="Story video not found")
+        return FileResponse(str(local_path), media_type="video/mp4", headers={"Cache-Control": "no-store"})
+
+    blob = STORAGE.bucket.blob(object_name)
+    if not blob.exists():
+        raise HTTPException(status_code=404, detail="Story video not found")
+    signed_url = blob.generate_signed_url(
+        version="v4",
+        expiration=timedelta(minutes=SIGNED_URL_EXPIRY_MIN),
+        method="GET",
+        response_disposition="inline",
+    )
+    return RedirectResponse(url=signed_url, status_code=307, headers={"Cache-Control": "no-store"})
