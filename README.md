@@ -19,6 +19,19 @@ The core product thesis is simple:
 
 > Idea becomes more compelling when AI behaves less like a chatbot and more like a creative director.
 
+## What makes Linger different
+
+Most reuse tools stop at idea generation.
+Linger goes one step further:
+
+- it starts from the **physical world**, not a prompt box,
+- it grounds story generation in the **user’s actual room**,
+- it turns capture into an **interactive creative process**,
+- and it outputs a short **multimodal story artifact**, not just advice.
+
+That combination of **camera-first interaction**, **grounded visual reasoning**, 
+and **deterministic rendering discipline** is what makes the project distinct and innovative.
+
 ---
 
 ## Why this repo matters
@@ -417,19 +430,6 @@ and prone to hallucinations. We learned that the "cheapest viable output" that s
 
 By combining these authentic captures with light motion (also known as [Ken Burns-style movement](https://en.wikipedia.org/wiki/Ken_Burns_effect)), rich Cloud TTS narration, and only a small amount of premium AI 
 video generation, the output feels incredibly grounded and personal, and greatly suits the environment-context.
-
-## What makes Linger different
-
-Most reuse tools stop at idea generation.
-Linger goes one step further:
-
-- it starts from the **physical world**, not a prompt box,
-- it grounds story generation in the **user’s actual room**,
-- it turns capture into an **interactive creative process**,
-- and it outputs a short **multimodal story artifact**, not just advice.
-
-That combination of **camera-first interaction**, **grounded visual reasoning**, 
-and **deterministic rendering discipline** is what makes the project distinct and innovative.
 
 ---
 
