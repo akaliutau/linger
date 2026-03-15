@@ -423,6 +423,7 @@ class StoredAsset:
     height: int
     created_at: str
     view_url: Optional[str] = None
+    download_url: Optional[str] = None
     gs_uri: Optional[str] = None
 
 
@@ -462,6 +463,7 @@ class StorageBackend:
             ensure_dir(local_path.parent)
             local_path.write_bytes(data)
             safe_json_dump(local_path.with_suffix(".json"), metadata)
+            local_url = f"/local_uploads/{object_name}"
             return StoredAsset(
                 storage_mode="local",
                 object_name=object_name,
@@ -470,7 +472,8 @@ class StorageBackend:
                 width=width,
                 height=height,
                 created_at=created_at,
-                view_url=f"/local_uploads/{object_name}",
+                view_url=local_url,
+                download_url=local_url,
             )
 
         blob = self.bucket.blob(object_name)
@@ -486,21 +489,31 @@ class StorageBackend:
             height=height,
             created_at=created_at,
             gs_uri=f"gs://{self.bucket_name}/{object_name}",
-            view_url=self._signed_url(blob),
+            view_url=self._signed_url(blob, response_disposition="inline"),
+            download_url=self._signed_url(blob, response_disposition=f'attachment; filename="{Path(object_name).name}"'),
         )
 
-    def _signed_url(self, blob: storage.Blob) -> Optional[str]:
-        return None
-    #    try:
-    #        return blob.generate_signed_url(
-    #            version="v4",
-    #            expiration=timedelta(minutes=SIGNED_URL_EXPIRY_MIN),
-    #            method="GET",
-    #            response_disposition="inline",
-    #        )
-    #    except Exception as exc:
-    #        json_log("signed_url_failed", object_name=blob.name, error=str(exc))
-    #        return None
+    def _signed_url(self, blob: Any, response_disposition: str = "inline") -> Optional[str]:
+        if self.mode != "gcs":
+            return None
+        try:
+            return blob.generate_signed_url(
+                version="v4",
+                expiration=timedelta(minutes=SIGNED_URL_EXPIRY_MIN),
+                method="GET",
+                response_disposition=response_disposition,
+            )
+        except Exception as exc:
+            json_log("signed_url_failed", object_name=getattr(blob, "name", None), error=str(exc))
+            return None
+
+    def signed_object_url(self, object_name: str, *, attachment: bool = False, download_name: Optional[str] = None) -> Optional[str]:
+        if self.mode != "gcs":
+            return None
+        blob = self.bucket.blob(object_name)
+        filename = download_name or Path(object_name).name
+        disposition = f'attachment; filename="{filename}"' if attachment else "inline"
+        return self._signed_url(blob, response_disposition=disposition)
 
 
 STORAGE = StorageBackend()
@@ -1234,16 +1247,41 @@ def current_story_video_url(session_id: str, request: Optional[Request] = None) 
     return app_public_url(f"/api/story/{session_id}/video.mp4", request)
 
 
+def story_video_object_name(session_id: str, prefer_final: bool = True) -> str:
+    if prefer_final:
+        return render_object_name(session_id, "final_story.mp4")
+    return current_story_video_path(session_id)
+
+
+def signed_story_video_url(session_id: str, request: Optional[Request] = None, *, attachment: bool = False, prefer_final: bool = True) -> str:
+    object_name = story_video_object_name(session_id, prefer_final=prefer_final)
+    if STORAGE.mode != "gcs":
+        return current_story_video_url(session_id, request)
+    signed = STORAGE.signed_object_url(object_name, attachment=attachment, download_name=Path(object_name).name)
+    return signed or current_story_video_url(session_id, request)
+
+
 def submit_video_job(*, session_id: str, basket_url: str, story_seed: Dict[str, Any]) -> Dict[str, Any]:
-    if not basket_url.startswith("gs://"):
-        raise RuntimeError("Real video job requires STORAGE_MODE=gcs and a gs:// basket_url")
-    if not BUCKET_NAME:
-        raise RuntimeError("BUCKET_NAME is required for video job submission")
+    output_uri = f"gs://{BUCKET_NAME}/{reels_prefix(session_id)}" if BUCKET_NAME else render_object_name(session_id, "final_story.mp4")
+    if not basket_url.startswith("gs://") or not BUCKET_NAME or not PROJECT_ID or not VIDEO_JOB_NAME:
+        json_log(
+            "video_job_skipped",
+            session_id=session_id,
+            basket_url=basket_url,
+            output_uri=output_uri,
+            reason="gcs_pipeline_not_configured",
+        )
+        return {
+            "status": "skipped",
+            "job_name": VIDEO_JOB_NAME,
+            "submitted_at": utc_iso(),
+            "output_uri": output_uri,
+            "reason": "gcs_pipeline_not_configured",
+        }
 
     creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
     authed = AuthorizedSession(creds)
 
-    output_uri = f"gs://{BUCKET_NAME}/{reels_prefix(session_id)}"
     run_url = f"https://run.googleapis.com/v2/projects/{PROJECT_ID}/locations/{REGION}/jobs/{VIDEO_JOB_NAME}:run"
     body = {
         "overrides": {
@@ -1282,17 +1320,6 @@ def submit_video_job(*, session_id: str, basket_url: str, story_seed: Dict[str, 
         "submitted_at": utc_iso(),
         "output_uri": output_uri,
     }
-
-    json_log(
-        "video_pipeline_submit_mock",
-        session_id=session_id,
-        ticket_id=ticket["ticket_id"],
-        submit_url=ticket["submit_url"],
-        basket_url=basket_url,
-        submit_payload=submit_payload,
-    )
-    pipeline_result["submit_payload"] = submit_payload
-    return ticket, pipeline_result
 
 
 
@@ -1886,11 +1913,22 @@ async def api_session_finalize(request: Request, session_id: str = Form(...), en
 
     placeholder_asset = upload_placeholder_video(session_id)
     share_url = app_public_url(story_share_path(session_id), request)
-    job = submit_video_job(
-        session_id=session_id,
-        basket_url=basket_url,
-        story_seed=story_seed,
-    )
+    reel_download_url = signed_story_video_url(session_id, request=request, attachment=True, prefer_final=True)
+    reel_stream_url = signed_story_video_url(session_id, request=request, attachment=False, prefer_final=True)
+    try:
+        job = submit_video_job(
+            session_id=session_id,
+            basket_url=basket_url,
+            story_seed=story_seed,
+        )
+    except Exception as exc:
+        json_log("video_job_submit_failed", session_id=session_id, error=str(exc), basket_url=basket_url)
+        job = {
+            "status": "submit_failed",
+            "submitted_at": utc_iso(),
+            "output_uri": render_object_name(session_id, "final_story.mp4"),
+            "error": str(exc),
+        }
 
     state["story_seed"] = story_seed
     state["finalized"] = {
@@ -1911,10 +1949,12 @@ async def api_session_finalize(request: Request, session_id: str = Form(...), en
         "finalized_at": utc_iso(),
         "share_url": share_url,
         "story_video_url": current_story_video_url(session_id, request),
+        "story_video_signed_url": reel_stream_url,
+        "reel_download_url": reel_download_url,
         "placeholder_asset": placeholder_asset,
         "job": job,
-        "status": "queued",
-        "message": "The video will be rendered in 2–3 min.",
+        "status": job.get("status", "queued"),
+        "message": "Your reel is being prepared. The signed reel URL is ready below.",
     }
     STORE.persist(session_id)
     await STORE.broadcast(session_id, {"type": "finalized", "finalized": state["finalized"]})
@@ -1965,7 +2005,7 @@ async def story_share_page(session_id: str) -> HTMLResponse:
 
 
 @app.get("/api/story/{session_id}/video.mp4")
-async def api_story_video(session_id: str):
+async def api_story_video(session_id: str, download: int = 0):
     session_id = slugify(session_id)
     object_name = current_story_video_path(session_id)
 
@@ -1973,7 +2013,10 @@ async def api_story_video(session_id: str):
         local_path = LOCAL_UPLOAD_DIR / object_name
         if not local_path.exists():
             raise HTTPException(status_code=404, detail="Story video not found")
-        return FileResponse(str(local_path), media_type="video/mp4", headers={"Cache-Control": "no-store"})
+        headers = {"Cache-Control": "no-store"}
+        if download:
+            headers["Content-Disposition"] = f"attachment; filename=\"{Path(object_name).name}\""
+        return FileResponse(str(local_path), media_type="video/mp4", headers=headers)
 
     blob = STORAGE.bucket.blob(object_name)
     if not blob.exists():

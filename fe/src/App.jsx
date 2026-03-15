@@ -8,6 +8,11 @@ const FRAME_INTERVAL_MS = 1000
 const AUTO_STOP_AFTER_FRAMES = 12
 const AUTO_STOP_TARGET_KEPT = 3
 const MAX_CONSECUTIVE_ERRORS = 3
+const HERO_CAPTURE_MAX_WIDTH = 1400
+const HERO_CAPTURE_QUALITY = 0.9
+const HARVEST_CAPTURE_MAX_WIDTH = 960
+const HARVEST_CAPTURE_QUALITY = 0.74
+const HERO_ANIMATION_MS = 760
 
 const initialDebug = {
   phase: 'intro',
@@ -177,6 +182,318 @@ function summarizeTrack(track) {
 }
 
 
+function triggerHaptic(pattern = 12) {
+  try {
+    navigator?.vibrate?.(pattern)
+  } catch {}
+}
+
+function upsertMeta(selector, attrs) {
+  if (typeof document === 'undefined') return null
+  let node = document.head.querySelector(selector)
+  if (!node) {
+    node = document.createElement('meta')
+    document.head.appendChild(node)
+  }
+  Object.entries(attrs).forEach(([key, value]) => {
+    if (value != null) node.setAttribute(key, String(value))
+  })
+  return node
+}
+
+function configureAppChrome() {
+  if (typeof document === 'undefined') return
+  document.documentElement.style.height = '100%'
+  document.body.style.height = '100%'
+  document.body.style.margin = '0'
+  document.body.style.background = '#05070b'
+  document.body.style.overscrollBehavior = 'none'
+  document.body.style.webkitTapHighlightColor = 'transparent'
+  upsertMeta('meta[name="viewport"]', {
+    name: 'viewport',
+    content: 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover',
+  })
+  upsertMeta('meta[name="theme-color"]', { name: 'theme-color', content: '#05070b' })
+  upsertMeta('meta[name="apple-mobile-web-app-capable"]', { name: 'apple-mobile-web-app-capable', content: 'yes' })
+  upsertMeta('meta[name="mobile-web-app-capable"]', { name: 'mobile-web-app-capable', content: 'yes' })
+}
+
+async function requestAppFullscreen() {
+  const el = document.documentElement
+  if (!el || document.fullscreenElement || !el.requestFullscreen) return false
+  try {
+    await el.requestFullscreen({ navigationUI: 'hide' })
+    return true
+  } catch {
+    try {
+      await el.requestFullscreen()
+      return true
+    } catch {
+      return false
+    }
+  }
+}
+
+function AppChromeStyles() {
+  return (
+    <style>{`
+      html, body, #root {
+        margin: 0;
+        min-height: 100%;
+        height: 100%;
+        background: #05070b;
+      }
+      body {
+        overscroll-behavior: none;
+      }
+      .app-shell {
+        min-height: 100dvh;
+        height: 100dvh;
+        background: #05070b;
+        overflow: hidden;
+      }
+      .screen {
+        min-height: 100dvh;
+      }
+      .camera-screen,
+      .wait-screen {
+        position: relative;
+        min-height: 100dvh;
+        height: 100dvh;
+        overflow: hidden;
+        background: #05070b;
+      }
+      .camera-video {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        transform: translateZ(0);
+        backface-visibility: hidden;
+      }
+      .hero-thumb-wrap {
+        position: absolute;
+        top: calc(env(safe-area-inset-top, 0px) + 18px);
+        right: 18px;
+        z-index: 7;
+      }
+      .hero-thumb {
+        width: 88px;
+        height: 118px;
+        border-radius: 22px;
+        object-fit: cover;
+        box-shadow: 0 18px 48px rgba(0, 0, 0, 0.36);
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        background: rgba(255, 255, 255, 0.06);
+      }
+      .hero-thumb.placeholder {
+        background: rgba(255, 255, 255, 0.08);
+        backdrop-filter: blur(12px);
+      }
+      .hero-thumb.pending {
+        opacity: 0.2;
+      }
+      .phase-chip {
+        position: absolute;
+        left: 18px;
+        top: calc(env(safe-area-inset-top, 0px) + 18px);
+        z-index: 7;
+      }
+      .status-strip {
+        position: absolute;
+        left: 16px;
+        right: 16px;
+        bottom: calc(env(safe-area-inset-bottom, 0px) + 532px);
+        z-index: 7;
+        backdrop-filter: blur(14px);
+      }
+      .camera-controls {
+        position: absolute;
+        left: 18px;
+        right: 18px;
+        bottom: calc(env(safe-area-inset-bottom, 0px) + 76px) !important;
+        z-index: 8;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+      }
+      .camera-controls .ghost-button,
+      .camera-controls .capture-button {
+        touch-action: manipulation;
+      }
+      .capture-button {
+        transform: translateZ(0);
+      }
+      .hero-capture-fx {
+        position: absolute;
+        inset: 0;
+        z-index: 9;
+        pointer-events: none;
+      }
+      .hero-capture-box {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: min(56vw, 280px);
+        aspect-ratio: 3 / 4;
+        transform: translate(-50%, -50%);
+        border-radius: 28px;
+        border: 2px solid rgba(255, 255, 255, 0.92);
+        box-shadow: 0 0 0 999px rgba(6, 9, 14, 0.08), 0 16px 50px rgba(0, 0, 0, 0.22);
+        animation: heroBoxShrink ${HERO_ANIMATION_MS}ms cubic-bezier(.2,.85,.22,1) forwards;
+      }
+      .hero-capture-fly-thumb {
+        position: absolute;
+        top: calc(env(safe-area-inset-top, 0px) + 18px);
+        right: 18px;
+        width: 88px;
+        height: 118px;
+        border-radius: 22px;
+        object-fit: cover;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        box-shadow: 0 18px 48px rgba(0, 0, 0, 0.36);
+        opacity: 0;
+        transform: scale(0.72);
+        animation: heroThumbReveal ${HERO_ANIMATION_MS}ms ease forwards;
+      }
+      .wait-shell {
+        min-height: 100dvh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: calc(env(safe-area-inset-top, 0px) + 28px) 20px calc(env(safe-area-inset-bottom, 0px) + 28px);
+        box-sizing: border-box;
+      }
+      .wait-card {
+        width: min(100%, 560px);
+        padding: 28px 22px;
+        border-radius: 28px;
+        background: linear-gradient(180deg, rgba(25,30,40,0.96), rgba(13,16,22,0.98));
+        border: 1px solid rgba(255,255,255,0.08);
+        box-shadow: 0 24px 90px rgba(0,0,0,0.38);
+        color: white;
+      }
+      .wait-card h2 {
+        margin: 0 0 10px;
+        font-size: 30px;
+        line-height: 1.04;
+      }
+      .wait-card p {
+        margin: 0;
+        color: rgba(255,255,255,0.78);
+        line-height: 1.5;
+      }
+      .wait-spinner {
+        width: 48px;
+        height: 48px;
+        border-radius: 999px;
+        border: 4px solid rgba(255,255,255,0.12);
+        border-top-color: rgba(255,255,255,0.95);
+        animation: spin 0.9s linear infinite;
+        margin-bottom: 18px;
+      }
+      .wait-link-block {
+        margin-top: 22px;
+        padding: 14px;
+        border-radius: 18px;
+        background: rgba(255,255,255,0.05);
+        border: 1px solid rgba(255,255,255,0.08);
+      }
+      .wait-link-label {
+        display: block;
+        margin-bottom: 8px;
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(255,255,255,0.56);
+      }
+      .wait-link,
+      .wait-link-raw {
+        color: #cce0ff;
+        word-break: break-word;
+      }
+      .wait-link-raw {
+        font-size: 13px;
+        margin-top: 8px;
+      }
+      .wait-dots {
+        display: inline-flex;
+        gap: 8px;
+        margin-top: 20px;
+      }
+      .wait-dots span {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: rgba(255,255,255,0.8);
+        animation: waitDot 1.1s ease-in-out infinite;
+      }
+      .wait-dots span:nth-child(2) { animation-delay: 120ms; }
+      .wait-dots span:nth-child(3) { animation-delay: 240ms; }
+      @keyframes heroBoxShrink {
+        0% {
+          opacity: 0;
+          width: min(62vw, 300px);
+          transform: translate(-50%, -50%) scale(1.03);
+        }
+        10% { opacity: 1; }
+        100% {
+          left: calc(100% - 62px);
+          top: calc(env(safe-area-inset-top, 0px) + 78px);
+          width: 88px;
+          opacity: 0;
+          transform: translate(-50%, -50%) scale(1);
+        }
+      }
+      @keyframes heroThumbReveal {
+        0%, 62% {
+          opacity: 0;
+          transform: scale(0.72);
+        }
+        100% {
+          opacity: 1;
+          transform: scale(1);
+        }
+      }
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+      @keyframes waitDot {
+        0%, 100% { opacity: 0.35; transform: translateY(0); }
+        50% { opacity: 1; transform: translateY(-4px); }
+      }
+    `}</style>
+  )
+}
+
+function WaitingScreen({ status, reelUrl }) {
+  return (
+    <div className="screen wait-screen">
+      <div className="wait-shell">
+        <div className="wait-card">
+          <div className="wait-spinner" />
+          <h2>{reelUrl ? 'Your reel link is ready' : 'Preparing your reel…'}</h2>
+          <p>{status || 'Packaging the selected shots and preparing the reel link.'}</p>
+          {reelUrl ? (
+            <div className="wait-link-block">
+              <span className="wait-link-label">Reel URL</span>
+              <a className="wait-link" href={reelUrl} target="_blank" rel="noreferrer">Open reel link</a>
+              <div className="wait-link-raw">{reelUrl}</div>
+            </div>
+          ) : (
+            <div className="wait-dots" aria-hidden>
+              <span />
+              <span />
+              <span />
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+
 function IntroScreen({ onStart, config, loadingConfig }) {
   return (
     <div className="screen intro-screen">
@@ -239,6 +556,9 @@ function CameraScreen({
   latencyAvg,
   guide,
   heroThumb,
+  heroThumbReady,
+  heroFxActive,
+  heroFxPreview,
   status,
   mode,
 }) {
@@ -248,10 +568,21 @@ function CameraScreen({
       <div className="camera-overlay top-gradient" />
       <div className="camera-overlay bottom-gradient" />
 
+      {heroFxActive && heroFxPreview ? (
+        <div className="hero-capture-fx" aria-hidden>
+          <div className="hero-capture-box" />
+          <img src={heroFxPreview} alt="" className="hero-capture-fly-thumb" />
+        </div>
+      ) : null}
+
       <TopHud score={score} kept={kept} framesSeen={framesSeen} latencyAvg={latencyAvg} guide={guide} />
 
       <div className="hero-thumb-wrap">
-        {heroThumb ? <img src={heroThumb} alt="Hero still" className="hero-thumb" /> : <div className="hero-thumb placeholder" />}
+        {heroThumb ? (
+          <img src={heroThumb} alt="Hero still" className={`hero-thumb ${heroThumbReady ? '' : 'pending'}`} />
+        ) : (
+          <div className="hero-thumb placeholder" />
+        )}
       </div>
 
       <div className="phase-chip">{phaseLabel}</div>
@@ -380,6 +711,7 @@ export default function App() {
   const framesSeenRef = useRef(0)
   const keptCountRef = useRef(0)
   const consecutiveErrorsRef = useRef(0)
+  const heroFxTimersRef = useRef([])
 
   const [config, setConfig] = useState({})
   const [loadingConfig, setLoadingConfig] = useState(true)
@@ -404,6 +736,27 @@ export default function App() {
   const [events, setEvents] = useState([])
   const [cameraBootPending, setCameraBootPending] = useState(false)
   const [streamNonce, setStreamNonce] = useState(0)
+  const [heroThumbReady, setHeroThumbReady] = useState(false)
+  const [heroFxActive, setHeroFxActive] = useState(false)
+  const [heroFxPreview, setHeroFxPreview] = useState('')
+  const [reelUrl, setReelUrl] = useState('')
+
+
+  function clearHeroFxTimers() {
+    heroFxTimersRef.current.forEach((timer) => clearTimeout(timer))
+    heroFxTimersRef.current = []
+  }
+
+  function runHeroCaptureFx(previewUrl) {
+    clearHeroFxTimers()
+    setHeroFxPreview(previewUrl)
+    setHeroThumbReady(false)
+    setHeroFxActive(true)
+    heroFxTimersRef.current.push(setTimeout(() => {
+      setHeroFxActive(false)
+      setHeroThumbReady(true)
+    }, HERO_ANIMATION_MS))
+  }
 
   const stateSummary = useMemo(
     () => ({ phase, mode, score, framesSeen, keptCount, consecutiveErrors, sessionId }),
@@ -480,6 +833,7 @@ export default function App() {
     video.setAttribute('autoplay', '')
     video.setAttribute('playsinline', 'true')
     video.setAttribute('webkit-playsinline', 'true')
+    video.disablePictureInPicture = true
     video.srcObject = stream
 
     try {
@@ -560,12 +914,14 @@ export default function App() {
   useEffect(() => {
     mountedRef.current = true
     pushEvent('app_effect_mounted', { strictModeSafe: true })
+    configureAppChrome()
     loadConfig()
     return () => {
       pushEvent('app_effect_cleanup', { strictModeSafe: true })
       mountedRef.current = false
       stopCamera()
       stopHarvestLoop()
+      clearHeroFxTimers()
       if (heroUrl) URL.revokeObjectURL(heroUrl)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -583,6 +939,7 @@ export default function App() {
       return
     }
 
+    void requestAppFullscreen()
     setCameraBusy(true)
     setPhase('camera')
     setMode('hero')
@@ -695,11 +1052,11 @@ export default function App() {
     }, delay)
   }
 
-  async function captureBlob(maxWidth = 1600, quality = 0.9) {
+  async function captureBlob(maxWidth = 1600, quality = 0.9, withDebugSample = false) {
     const video = videoRef.current
     if (!video) throw new Error('Camera video element is missing')
 
-    const ok = await waitForVideoReady(video, 3500)
+    const ok = videoReady(video) || await waitForVideoReady(video, 1200)
     if (!ok) {
       const payload = {
         readyState: video.readyState || 0,
@@ -723,18 +1080,22 @@ export default function App() {
       canvas = document.createElement('canvas')
       canvasRef.current = canvas
     }
-    canvas.width = outWidth
-    canvas.height = outHeight
-    const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: true })
+    if (canvas.width !== outWidth) canvas.width = outWidth
+    if (canvas.height !== outHeight) canvas.height = outHeight
+    const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true, willReadFrequently: withDebugSample })
     if (!ctx) throw new Error('Canvas is not available')
+    ctx.imageSmoothingEnabled = true
+    ctx.imageSmoothingQuality = 'medium'
     ctx.drawImage(video, 0, 0, outWidth, outHeight)
 
-    const sample = ctx.getImageData(0, 0, Math.min(outWidth, 24), Math.min(outHeight, 24)).data
-    let total = 0
-    for (let i = 0; i < sample.length; i += 4) total += sample[i] + sample[i + 1] + sample[i + 2]
-    const avgLuma = sample.length ? Math.round(total / (sample.length / 4) / 3) : 0
-    pushEvent('capture_sample', { width: outWidth, height: outHeight, avgLuma, currentTime: Number(video.currentTime || 0).toFixed(3) })
-    updateDebug({ videoReadyState: video.readyState || 0, videoDims: `${width}x${height}`, cameraState: `capture_luma_${avgLuma}` })
+    if (withDebugSample) {
+      const sample = ctx.getImageData(0, 0, Math.min(outWidth, 20), Math.min(outHeight, 20)).data
+      let total = 0
+      for (let i = 0; i < sample.length; i += 4) total += sample[i] + sample[i + 1] + sample[i + 2]
+      const avgLuma = sample.length ? Math.round(total / (sample.length / 4) / 3) : 0
+      pushEvent('capture_sample', { width: outWidth, height: outHeight, avgLuma, currentTime: Number(video.currentTime || 0).toFixed(3) })
+      updateDebug({ videoReadyState: video.readyState || 0, videoDims: `${width}x${height}`, cameraState: `capture_luma_${avgLuma}` })
+    }
 
     const blob = await new Promise((resolve, reject) => {
       canvas.toBlob((result) => {
@@ -747,6 +1108,7 @@ export default function App() {
 
   async function handlePrimary() {
     if (cameraBusy) return
+    void requestAppFullscreen()
     if (mode === 'hero') {
       await runStage1Capture()
       return
@@ -764,10 +1126,12 @@ export default function App() {
     try {
       setCameraBusy(true)
       setStatus('Reading the first shot…')
-      const blob = await captureBlob(1600, 0.92)
+      const blob = await captureBlob(HERO_CAPTURE_MAX_WIDTH, HERO_CAPTURE_QUALITY, true)
       const previewUrl = URL.createObjectURL(blob)
       if (heroUrl) URL.revokeObjectURL(heroUrl)
       setHeroUrl(previewUrl)
+      runHeroCaptureFx(previewUrl)
+      triggerHaptic(10)
 
       const form = new FormData()
       form.append('session_id', sessionId)
@@ -824,7 +1188,7 @@ export default function App() {
     let nextDelay = FRAME_INTERVAL_MS
 
     try {
-      const blob = await captureBlob(1280, 0.82)
+      const blob = await captureBlob(HARVEST_CAPTURE_MAX_WIDTH, HARVEST_CAPTURE_QUALITY, false)
       const nextFrameIndex = framesSeenRef.current + 1
       const form = new FormData()
       form.append('session_id', sessionId)
@@ -836,7 +1200,7 @@ export default function App() {
       const started = performance.now()
       const data = await fetchJson('/api/live/frame', { method: 'POST', body: form }, FRAME_TIMEOUT_MS)
       const latencyMs = Math.round(performance.now() - started)
-      nextDelay = Math.max(150, FRAME_INTERVAL_MS - latencyMs)
+      nextDelay = Math.max(140, FRAME_INTERVAL_MS - Math.min(latencyMs, 700))
 
       const nextFramesSeen = nextFrameIndex
       const nextScore = Number(data.score || data.analysis?.score_0_to_100 || 0)
@@ -1005,15 +1369,23 @@ export default function App() {
 
   async function generateStory() {
     try {
+      triggerHaptic([14, 40, 14])
       setGenerating(true)
-      setStatus('Preparing story basket…')
+      setPhase('waiting')
+      setMode('waiting')
+      setDebugOpen(false)
+      setStatus('Preparing the reel package…')
+      setGuide('')
+      setReelUrl('')
       const form = new FormData()
       form.append('session_id', sessionId)
       form.append('enough_moment', 'Collection ready')
       const finalized = await fetchJson('/api/session/finalize', { method: 'POST', body: form }, FINALIZE_TIMEOUT_MS)
       const mergedFinalize = finalized.finalized || {}
+      const nextReelUrl = mergedFinalize?.reel_download_url || mergedFinalize?.story_video_signed_url || mergedFinalize?.share_url || ''
 
       setFinalizeInfo(mergedFinalize)
+      setReelUrl(nextReelUrl)
       const displayFrames =
         mergedFinalize?.shot_manifest ||
         mergedFinalize?.story_seed?.selected_frame_items ||
@@ -1023,15 +1395,16 @@ export default function App() {
         basketAssets: finalized.finalized?.basket_assets?.length || 0,
         selectedCount: finalized.finalized?.selected_count || 0,
         usedFallbackFrame: Boolean(finalized.finalized?.used_fallback_frame),
+        reelUrl: nextReelUrl,
       })
-      setStatus(mergedFinalize?.message || 'Your reel is on the way.')
-      setGuide('The video will be rendered in 2–3 min.')
-      if (mergedFinalize?.share_url && navigator?.clipboard?.writeText) {
-        navigator.clipboard.writeText(mergedFinalize.share_url).catch(() => {})
+      setStatus(mergedFinalize?.message || 'Your reel is being prepared. Use the reel URL below once it is ready.')
+      if (nextReelUrl && navigator?.clipboard?.writeText) {
+        navigator.clipboard.writeText(nextReelUrl).catch(() => {})
       }
     } catch (err) {
       const message = shortError(err)
       setStatus(message)
+      setReelUrl('')
       updateDebug({ lastError: message, lastNetwork: 'finalize' })
       pushEvent('finalize_failed', { error: message })
     } finally {
@@ -1060,10 +1433,15 @@ export default function App() {
     setAnalysis(null)
     setBestFrames([])
     setFinalizeInfo(null)
+    setReelUrl('')
     setGenerating(false)
     setConsecutiveErrors(0)
     setDebug(initialDebug)
     setEvents([])
+    setHeroThumbReady(false)
+    setHeroFxActive(false)
+    setHeroFxPreview('')
+    clearHeroFxTimers()
     lastSpeakAtRef.current = 0
     requestInFlightRef.current = false
   }
@@ -1091,6 +1469,7 @@ export default function App() {
   useEffect(() => {
     return () => {
       if (heroUrl) URL.revokeObjectURL(heroUrl)
+      clearHeroFxTimers()
     }
   }, [heroUrl])
 
@@ -1178,6 +1557,7 @@ export default function App() {
 
   return (
     <div className="app-shell">
+      <AppChromeStyles />
       {phase === 'intro' && <IntroScreen onStart={startStory} config={config} loadingConfig={loadingConfig} />}
 
       {phase === 'camera' && (
@@ -1196,7 +1576,18 @@ export default function App() {
           latencyAvg={latencyAvg}
           guide={guide}
           heroThumb={heroUrl}
+          heroThumbReady={heroThumbReady}
+          heroFxActive={heroFxActive}
+          heroFxPreview={heroFxPreview}
           status={status}
+        />
+      )}
+
+
+      {phase === 'waiting' && (
+        <WaitingScreen
+          status={status}
+          reelUrl={reelUrl}
         />
       )}
 
@@ -1212,6 +1603,7 @@ export default function App() {
         />
       )}
 
+      {phase !== 'waiting' && (
       <DebugDrawer
         open={debugOpen}
         onToggle={() => setDebugOpen((prev) => !prev)}
@@ -1220,6 +1612,7 @@ export default function App() {
         config={config}
         stateSummary={stateSummary}
       />
+      )}
     </div>
   )
 }
