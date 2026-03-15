@@ -4,9 +4,9 @@ const APP_TITLE = 'Linger Story Camera'
 const HERO_TIMEOUT_MS = 25000
 const FRAME_TIMEOUT_MS = 18000
 const FINALIZE_TIMEOUT_MS = 45000
-const FRAME_INTERVAL_MS = 2400
+const FRAME_INTERVAL_MS = 1000
 const AUTO_STOP_AFTER_FRAMES = 12
-const AUTO_STOP_TARGET_KEPT = 4
+const AUTO_STOP_TARGET_KEPT = 3
 const MAX_CONSECUTIVE_ERRORS = 3
 
 const initialDebug = {
@@ -70,20 +70,66 @@ function scoreTone(score) {
   return 'low'
 }
 
-function publicGuideFor(score, selected, keptTotal) {
-  if (selected && score >= 88) return `Strong moment. Stay here and add ${keptTotal < 2 ? 'two' : 'one'} more.`
-  if (score >= 78) return 'Nice. Keep the phone steady and vary the distance.'
-  if (score >= 60) return 'Close. Hold steadier and simplify the frame.'
-  if (score >= 40) return 'Try cleaner edges and a brighter angle.'
-  return 'Move slower. Wait for cleaner light and stronger lines.'
+function normalizeRole(role) {
+  const raw = String(role || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_')
+  const mapping = {
+    hero: 'hero_object',
+    hero_shot: 'hero_object',
+    object: 'hero_object',
+    detail: 'detail_texture',
+    texture: 'detail_texture',
+    context: 'reveal_context',
+    wide: 'reveal_context',
+    reveal: 'reveal_context',
+    problem: 'problem_area',
+    opportunity: 'room_opportunity',
+    room: 'room_opportunity',
+    fit: 'fit_check',
+    fitcheck: 'fit_check',
+  }
+  return mapping[raw] || raw || 'reveal_context'
 }
 
-function shouldSpeakSpike(previousBest, score, selected, nowMs, lastSpeakAt) {
+function prettyRole(role) {
+  return normalizeRole(role).replace(/_/g, ' ')
+}
+
+function publicGuideFor(score, selected, keptTotal, role = '') {
+  const normalized = normalizeRole(role)
+
+  if (selected && normalized === 'room_opportunity') return 'Good corner. Take one tighter proof shot.'
+  if (selected && normalized === 'fit_check') return 'Nice fit. Take one wider safety shot.'
+  if (selected && normalized === 'hero_object') return `Strong hero. Add ${keptTotal < 2 ? 'two' : 'one'} support shots.`
+  if (selected && normalized === 'detail_texture') return 'Good detail. Now get one wider context shot.'
+  if (selected && normalized === 'problem_area') return 'Good problem signal. Show the surrounding area.'
+
+  if (score >= 78) return 'Nice. Find the room need this could solve.'
+  if (score >= 60) return 'Close. Hold steadier and show more room context.'
+  if (score >= 40) return 'Try a cleaner corner or brighter angle.'
+  return 'Move slower. Look for the empty spot or problem area.'
+}
+
+function shouldSpeakSpike(previousBest, score, selected, nowMs, lastSpeakAt, role = '') {
   if (!selected) return false
-  if (score < 80) return false
-  if (score - previousBest < 8 && previousBest !== 0) return false
   if (nowMs - lastSpeakAt < 9000) return false
+
+  const normalized = normalizeRole(role)
+  if (score >= 78 && ['room_opportunity', 'fit_check', 'hero_object'].includes(normalized)) {
+    return true
+  }
+
+  if (score < 82) return false
+  if (score - previousBest < 8 && previousBest !== 0) return false
   return true
+}
+
+function voiceLineFromFrameResult(data, score, selected, keptTotal, role) {
+  const clean = String(
+    data?.guidance ||
+    data?.analysis?.micro_direction ||
+    publicGuideFor(score, selected, keptTotal, role)
+  ).trim()
+  return clean || 'Take one cleaner support shot.'
 }
 
 function cameraAvailable() {
@@ -228,6 +274,10 @@ function CameraScreen({
 }
 
 function ReviewScreen({ heroUrl, analysis, generating, onGenerate, onReset, finalizeInfo, bestFrames }) {
+  const hook = finalizeInfo?.story_seed?.hook || analysis?.story_signal || 'A grounded second-life idea built from the best room evidence.'
+  const strategy = finalizeInfo?.story_seed?.generation_strategy || ''
+  const shownFrames = (bestFrames || []).slice(0, 3)
+
   return (
     <div className="screen review-screen">
       <div className="review-shell">
@@ -243,17 +293,19 @@ function ReviewScreen({ heroUrl, analysis, generating, onGenerate, onReset, fina
 
           <div className="idea-box">
             <div className="idea-label">Idea</div>
-            <p>{analysis?.story_signal || 'A short atmospheric story assembled from the strongest moments.'}</p>
+            <p>{hook}</p>
+            {strategy ? <p className="muted">{strategy}</p> : null}
           </div>
 
-          {!!bestFrames?.length && (
+          {!!shownFrames.length && (
             <div className="best-strip">
-              {bestFrames.slice(0, 3).map((frame) => (
+              {shownFrames.map((frame) => (
                 <div className="best-pill" key={frame.local_path || frame.frame_index}>
                   <img src={frame.preview_url || frame.local_preview_url || heroUrl} alt={frame.moment_label || 'Best frame'} />
                   <div>
-                    <strong>{frame.moment_label || 'Moment'}</strong>
-                    <span>{frame.score_0_to_100}/100</span>
+                    <strong>{frame.moment_label || prettyRole(frame.cinematic_role)}</strong>
+                    <span>{prettyRole(frame.cinematic_role)} · {frame.score_0_to_100}/100</span>
+                    {frame.best_future_use ? <small>{frame.best_future_use}</small> : null}
                   </div>
                 </div>
               ))}
@@ -723,7 +775,7 @@ export default function App() {
       setAnalysis(data.analysis)
       setMode('ready')
       setStatus(data.analysis?.one_line_summary || 'Ready for context.')
-      setGuide('Tap Record context. Stay with the same camera view.')
+      setGuide(data.analysis?.opening_coach_line || 'Tap Record context. Look for where this could belong.')
       updateDebug({ phase: 'camera', lastLatencyMs: latencyMs, sessionId, lastNetwork: 'stage1' })
       pushEvent('stage1_ready', { latencyMs, label: data.analysis?.object_label })
     } catch (err) {
@@ -741,15 +793,15 @@ export default function App() {
     try {
       setCameraBusy(true)
       setMode('harvesting')
-      setStatus('Recording context…')
+      setStatus('Scanning the room…')
       const form = new FormData()
       form.append('session_id', sessionId)
       const data = await fetchJson('/api/live/start', { method: 'POST', body: form }, 15000)
-      const startGuide = publicGuideFor(score, false, keptCount)
+      const startGuide = (data.guidance || analysis?.opening_coach_line || publicGuideFor(score, false, keptCount, 'room_opportunity')).trim()
       setGuide(startGuide)
       updateDebug({ lastRawGuidance: data.guidance || '', lastNetwork: 'live_start' })
       pushEvent('harvest_started', { rawGuidance: data.guidance || '' })
-      scheduleNextFrame(600)
+      scheduleNextFrame(250)
     } catch (err) {
       const message = shortError(err)
       setMode('ready')
@@ -764,6 +816,8 @@ export default function App() {
   async function processHarvestTick() {
     if (requestInFlightRef.current || modeRef.current !== 'harvesting') return
     requestInFlightRef.current = true
+    let nextDelay = FRAME_INTERVAL_MS
+
     try {
       const blob = await captureBlob(1280, 0.82)
       const nextFrameIndex = framesSeenRef.current + 1
@@ -777,12 +831,14 @@ export default function App() {
       const started = performance.now()
       const data = await fetchJson('/api/live/frame', { method: 'POST', body: form }, FRAME_TIMEOUT_MS)
       const latencyMs = Math.round(performance.now() - started)
+      nextDelay = Math.max(150, FRAME_INTERVAL_MS - latencyMs)
 
       const nextFramesSeen = nextFrameIndex
       const nextScore = Number(data.score || data.analysis?.score_0_to_100 || 0)
       const nextKept = Number(data.kept_total || 0)
       const selected = Boolean(data.selected)
-      const nextGuide = publicGuideFor(nextScore, selected, nextKept)
+      const nextRole = normalizeRole(data.candidate?.cinematic_role || data.analysis?.cinematic_role)
+      const nextGuide = String(data.guidance || publicGuideFor(nextScore, selected, nextKept, nextRole)).trim()
       const previousBest = scoreRef.current
 
       framesSeenRef.current = nextFramesSeen
@@ -796,6 +852,7 @@ export default function App() {
       setGuide(nextGuide)
       setStatus(selected ? 'Strong moment saved.' : 'Scanning for the next strong frame.')
       setConsecutiveErrors(0)
+
       updateDebug({
         lastLatencyMs: latencyMs,
         frameLatencyAvgMs: Number(data.avg_latency_ms || 0),
@@ -806,6 +863,7 @@ export default function App() {
         frameIndex: nextFrameIndex,
         score: nextScore,
         selected,
+        role: nextRole,
         latencyMs,
         rawGuidance: data.guidance || '',
       })
@@ -817,15 +875,19 @@ export default function App() {
         })
       }
 
-      if (shouldSpeakSpike(previousBest, nextScore, selected, Date.now(), lastSpeakAtRef.current)) {
+      if (shouldSpeakSpike(previousBest, nextScore, selected, Date.now(), lastSpeakAtRef.current, nextRole)) {
+        const line = voiceLineFromFrameResult(data, nextScore, selected, nextKept, nextRole)
         lastSpeakAtRef.current = Date.now()
-        void speakGuide("I've got an idea. Make more photos of this place.")
-        pushEvent('voice_spike', { score: nextScore })
+        void speakGuide(line)
+        pushEvent('voice_spike', { score: nextScore, role: nextRole, line })
       }
 
-      const shouldAutoStop = (nextKept >= AUTO_STOP_TARGET_KEPT && nextFramesSeen >= 6) || nextFramesSeen >= AUTO_STOP_AFTER_FRAMES
+      const shouldAutoStop =
+        Boolean(data.should_stop) ||
+        ((nextKept >= AUTO_STOP_TARGET_KEPT && nextFramesSeen >= 5) || nextFramesSeen >= AUTO_STOP_AFTER_FRAMES)
+
       if (shouldAutoStop) {
-        enterReview(nextKept >= AUTO_STOP_TARGET_KEPT ? 'Collection ready.' : 'Good enough for demo.')
+        enterReview(data.stop_reason || (nextKept >= AUTO_STOP_TARGET_KEPT ? 'Collection ready.' : 'Good enough for demo.'))
         return
       }
     } catch (err) {
@@ -837,15 +899,16 @@ export default function App() {
       setStatus(message)
       updateDebug({ lastError: message, lastNetwork: 'live_frame' })
       pushEvent('frame_failed', { error: message, attempt: nextErrors })
+      nextDelay = 1200
+
       if (nextErrors >= MAX_CONSECUTIVE_ERRORS) {
         enterReview('Stopped safely after repeated model issues.')
         return
       }
-      await wait(1200)
     } finally {
       requestInFlightRef.current = false
       if (modeRef.current === 'harvesting') {
-        scheduleNextFrame()
+        scheduleNextFrame(nextDelay)
       }
     }
   }
@@ -853,6 +916,7 @@ export default function App() {
   async function speakGuide(text) {
     const clean = text?.trim()
     if (!clean) return
+
     if (voiceModeRef.current !== 'browser') {
       try {
         const data = await fetchJson(
@@ -897,7 +961,7 @@ export default function App() {
     setPhase('review')
     setMode('review')
     setStatus(message)
-    setGuide('Collection ready.')
+    setGuide('Collection ready. Review the three best story inputs.')
     updateDebug({ phase: 'review' })
     pushEvent('enter_review', { message })
   }
@@ -909,12 +973,27 @@ export default function App() {
       const form = new FormData()
       form.append('session_id', sessionId)
       form.append('enough_moment', 'Collection ready')
+
       const finalized = await fetchJson('/api/session/finalize', { method: 'POST', body: form }, FINALIZE_TIMEOUT_MS)
-      setFinalizeInfo(finalized.finalized)
       const state = await fetchJson(`/api/session/${encodeURIComponent(sessionId)}`, {}, 15000)
-      setBestFrames(state.best_frames || [])
-      pushEvent('finalized', { basketAssets: finalized.finalized?.basket_assets?.length || 0 })
-      setStatus(finalized.finalized?.pipeline_result?.status === 'finished' ? 'Story started.' : 'Basket ready.')
+
+      const mergedFinalize = {
+        ...(finalized.finalized || {}),
+        story_seed: state.story_seed || finalized.finalized?.story_seed || null,
+      }
+
+      setFinalizeInfo(mergedFinalize)
+      setBestFrames((state.best_frames || []).slice(0, 3))
+      pushEvent('finalized', {
+        basketAssets: finalized.finalized?.basket_assets?.length || 0,
+        selectedCount: finalized.finalized?.selected_count || 0,
+      })
+
+      setStatus(
+        finalized.finalized?.pipeline_result?.status === 'finished'
+          ? 'Story started.'
+          : 'Bundle ready for video pipeline.'
+      )
     } catch (err) {
       const message = shortError(err)
       setStatus(message)

@@ -85,9 +85,19 @@ GUIDE_TTS_ENABLED = os.getenv("GUIDE_TTS_ENABLED", "true").lower() in {"1", "tru
 GUIDE_TTS_LANGUAGE_CODE = os.getenv("GUIDE_TTS_LANGUAGE_CODE", "en-US")
 GUIDE_TTS_VOICE_NAME = os.getenv("GUIDE_TTS_VOICE_NAME", "en-US-Chirp3-HD-Aoede")
 GUIDE_TTS_ENDPOINT = os.getenv("CLOUD_TTS_ENDPOINT", "")
-AUTO_STOP_KEEP_COUNT = int(os.getenv("AUTO_STOP_KEEP_COUNT", "4"))
+AUTO_STOP_KEEP_COUNT = int(os.getenv("AUTO_STOP_KEEP_COUNT", "3"))
 AUTO_STOP_BEST_SCORE = int(os.getenv("AUTO_STOP_BEST_SCORE", "90"))
 AUTO_STOP_MAX_FRAMES = int(os.getenv("AUTO_STOP_MAX_FRAMES", "24"))
+EXPORT_BEST_COUNT = int(os.getenv("EXPORT_BEST_COUNT", "3"))
+
+ROLE_PRIORITY = (
+    "hero_object",
+    "room_opportunity",
+    "fit_check",
+    "reveal_context",
+    "detail_texture",
+    "problem_area",
+)
 MODEL_TIMEOUT_SEC = int(os.getenv("MODEL_TIMEOUT_SEC", "30"))
 DEBUG_EVENT_LIMIT = int(os.getenv("DEBUG_EVENT_LIMIT", "200"))
 REACT_DIST_DIR_ENV = os.getenv("REACT_DIST_DIR", "")
@@ -377,6 +387,10 @@ FRAME_SCHEMA: Dict[str, Any] = {
         "micro_direction": {"type": "STRING"},
         "best_future_use": {"type": "STRING"},
         "duplicate_likelihood_0_to_100": {"type": "INTEGER"},
+        "clarity_0_to_100": {"type": "INTEGER"},
+        "context_fit_0_to_100": {"type": "INTEGER"},
+        "opportunity_signal_0_to_100": {"type": "INTEGER"},
+        "novelty_0_to_100": {"type": "INTEGER"},
     },
     "required": [
         "keep",
@@ -508,12 +522,15 @@ class LiveTextAgent:
         if not self.enabled or self._session is not None:
             return
         seed = (
-            "You are a short, practical live visual coach for a mobile capture session. "
-            "You are helping the user make strong vertical shots on a phone, not hunt the exact item. "
-            "Keep replies under 14 words, concrete, calm, and cinematic. "
-            "Prioritize steadiness, framing, light, background cleanup, and shot variety. "
-            "Never write paragraphs. Speak like a helpful director. "
-            f"Stage 1 capture brief: {json.dumps(self.stage1_payload, ensure_ascii=False)}"
+            "You are Linger's live room scout. "
+            "The user has already shown the hero object. "
+            "Now help them collect 1-second stop-shots of the surrounding space so a later generator can make a grounded second-life concept. "
+            "Keep replies under 12 words, concrete, calm, and useful. "
+            "Need-first, not object-first. "
+            "Talk only when useful. Ask for one better angle at a time. "
+            "Prefer guidance that helps capture one of these roles: hero_object, room_opportunity, fit_check, reveal_context, detail_texture, problem_area. "
+            "Never hallucinate measurements. Never ramble. Never reveal a final idea unless the evidence is strong. "
+            f"Stage 1 dossier: {json.dumps(self.stage1_payload, ensure_ascii=False)}"
         )
         try:
             self._ctx = get_live_client().aio.live.connect(
@@ -655,14 +672,22 @@ def part_size_bytes(part: Any) -> int:
 def stage1_fallback(note: str = "") -> Dict[str, Any]:
     note_hint = (note or "").strip()
     return {
-        "object_label": "Story seed",
-        "one_line_summary": "A clean hero frame ready for a short vertical story.",
-        "story_signal": note_hint[:120] if note_hint else "Use this place as the anchor and gather a few strong supporting moments.",
-        "why_it_is_visually_workable": "The image can anchor a simple mobile-first sequence built from one hero frame and a few context shots.",
-        "things_to_avoid": ["blur", "cluttered edges", "flat light"],
-        "live_capture_goals": ["one tight detail", "one wider context frame", "one cleaner backup hero"],
-        "best_angles": ["slightly closer", "clean vertical center", "gentle side angle"],
-        "opening_coach_line": "Start with one clean frame, then vary the distance.",
+        "object_label": "Reusable item",
+        "one_line_summary": "A usable object that could solve a small room need with the right context.",
+        "story_signal": note_hint[:120] if note_hint else "Find where this item could help in the room, then capture proof shots.",
+        "why_it_is_visually_workable": "The object can anchor a grounded before-and-after story if we collect one hero frame plus room evidence.",
+        "things_to_avoid": ["blur", "busy edges", "dark corners"],
+        "live_capture_goals": [
+            "find the room problem or empty spot",
+            "capture one fit-check or placement proof shot",
+            "capture one detail or texture support shot",
+        ],
+        "best_angles": [
+            "clean centered hero",
+            "closer texture detail",
+            "wider room reveal",
+        ],
+        "opening_coach_line": "Scan the room for where this could help.",
         "quality_score_1_to_10": 6,
         "_fallback": True,
     }
@@ -687,32 +712,43 @@ def quick_frame_fallback(frame_bytes: bytes, width: int, height: int) -> Dict[st
         edge = (sx + sy) / (31 * 31 * 2)
     finally:
         image.close()
+
     brightness_score = max(0, 100 - int(abs(mean - 138) * 1.1))
     sharpness_score = min(100, int(edge * 1.8 + variance * 0.03))
     center_bonus = 8 if height >= width else 0
     score = int(max(18, min(92, 0.45 * brightness_score + 0.45 * sharpness_score + center_bonus)))
     keep = score >= max(68, MIN_KEEP_SCORE - 6)
+
     if mean < 75:
-        micro = "Find brighter light. Hold steady."
-        label = "Dim frame"
+        micro = "Find brighter light and hold steady."
+        label = "Dim stop-shot"
+        role = "reveal_context"
     elif sharpness_score < 40:
-        micro = "Hold still and lock the frame."
-        label = "Soft frame"
+        micro = "Hold still and lock one cleaner frame."
+        label = "Soft stop-shot"
+        role = "fit_check"
     elif keep:
-        micro = "Nice. Take one close and one wider."
-        label = "Strong mobile frame"
+        micro = "Good. Take one closer proof shot."
+        label = "Useful room proof"
+        role = "room_opportunity" if height >= width else "reveal_context"
     else:
-        micro = "Simplify the edges and try again."
-        label = "Usable frame"
+        micro = "Simplify edges and show more room."
+        label = "Usable context frame"
+        role = "reveal_context"
+
     return {
         "keep": keep,
         "score_0_to_100": score,
         "moment_label": label,
-        "cinematic_role": "context" if width <= height else "wide",
+        "cinematic_role": role,
         "why": "Fallback visual heuristic used after model issue.",
         "micro_direction": micro[:60],
-        "best_future_use": "context cutaway" if keep else "skip",
+        "best_future_use": "supporting still" if keep else "skip",
         "duplicate_likelihood_0_to_100": 40,
+        "clarity_0_to_100": sharpness_score,
+        "context_fit_0_to_100": score,
+        "opportunity_signal_0_to_100": 60 if keep else 35,
+        "novelty_0_to_100": 40,
         "_fallback": True,
     }
 
@@ -765,12 +801,25 @@ def generate_json(prompt: str, schema: Dict[str, Any], media_parts: Optional[Lis
 
 def stage1_prompt(note: str) -> str:
     return (
-        "You are preparing a mobile-first cinematic capture session for a later 30-second vertical story reel. "
-        "Interpret this item photo as a capture brief, not as a rigid object-tracking task. "
-        "Return strict JSON only. "
+        "You are Stage 1 of Linger, a need-first second-life room scout. "
+        "The user shows one hero object first, and phase 2 will collect 1-second stop-shots of the surrounding space. "
+        "Interpret the object as a future reuse opportunity, not as a product identification task. "
+        "Return strict JSON only and fill the existing schema exactly. "
         f"User note: {note or 'No extra note.'} "
-        "Focus on: what is visually interesting here, what kinds of strong shots would work next, how to make a clean vertical shot, and what mistakes to avoid. "
-        "Do not over-index on identifying the exact product name. Optimize for beautiful, usable shots."
+        "Be need-first, not object-first. Infer reuse affordances, what kind of room need this item might solve, "
+        "and what evidence the camera should hunt next in the room. "
+        "Use the existing fields like this: "
+        "object_label = plain object name; "
+        "one_line_summary = what this object could plausibly become; "
+        "story_signal = one sentence linking object to a room need or opportunity; "
+        "why_it_is_visually_workable = why this can anchor a grounded before/after story; "
+        "things_to_avoid = capture mistakes; "
+        "live_capture_goals = 3 short goals for phase 2 stop-shots, especially problem area, fit-check, and room proof; "
+        "best_angles = hero/detail/context suggestions; "
+        "opening_coach_line = one short spoken-ready sentence under 12 words; "
+        "quality_score_1_to_10 = confidence. "
+        "Do not over-index on the exact brand or exact product identity. "
+        "Optimize for grounded reuse inspiration and clean downstream story generation."
     )
 
 
@@ -784,22 +833,34 @@ def frame_prompt(stage1_payload: Dict[str, Any], note: str, recent_best: List[Di
         for frame in recent_best[:4]
     ]
     return (
-        "You are judging a single frame from a live mobile capture session for a vertical 30-second video story. "
-        "Your job is to find strong shots, not to hunt for the exact object from stage 1. "
-        "Reward crisp focus, steady framing, clean background, flattering light, readable subject separation, and shot variety. "
+        "You are judging one isolated 1-second stop-shot from phase 2 of a mobile capture session. "
+        "The app already has the hero object. Your job now is to find grounded inspiration in the surrounding room. "
         "Return strict JSON only. "
-        f"Stage 1 capture brief: {json.dumps(stage1_payload, ensure_ascii=False)}. "
+        f"Stage 1 dossier: {json.dumps(stage1_payload, ensure_ascii=False)}. "
         f"Recent best frames: {json.dumps(best_summary, ensure_ascii=False)}. "
         f"Operator note: {note or 'No extra note.'}. "
-        "Prefer frames that can play as hero, detail, reveal, texture, or context shots. "
-        "If the frame is weak, say why briefly. Do not force guidance toward the original item unless it clearly helps. "
-        "Micro direction must be one short spoken-friendly sentence under 10 words."
+        "Use this score rubric: "
+        "30 points = clarity and steadiness, "
+        "25 points = readability of the object or target area, "
+        "20 points = context usefulness for a later generated scene, "
+        "15 points = opportunity signal that suggests where this object could belong, "
+        "10 points = novelty versus already kept frames. "
+        "Pick cinematic_role from this set when possible: "
+        "hero_object, room_opportunity, fit_check, reveal_context, detail_texture, problem_area. "
+        "A keep-worthy frame should help prove one of three things: "
+        "what the object is, what room problem exists, or why the object fits there. "
+        "Do not obsess over matching the exact item from stage 1. "
+        "Reward frames that would be useful inputs for a later storyboard or image generation step. "
+        "If weak, say why briefly. "
+        "Micro direction must be one short spoken-friendly sentence under 10 words. "
+        "If you have enough evidence, be decisive. If the frame is repetitive, raise duplicate_likelihood_0_to_100."
     )
 
 
 def chat_prompt(stage1_payload: Dict[str, Any], best_frames: List[Dict[str, Any]], user_text: str) -> str:
     return (
-        "You are a live capture coach. Reply in 1 short sentence, spoken-friendly, no fluff. "
+        "You are Linger's live room scout. Reply in 1 short sentence, spoken-friendly, no fluff. "
+        "Need-first, not object-first. Help the user capture room evidence for a second-life idea. "
         f"Stage 1 interpretation: {json.dumps(stage1_payload, ensure_ascii=False)}. "
         f"Best frames so far: {json.dumps(best_frames[:3], ensure_ascii=False)}. "
         f"User says: {user_text}"
@@ -835,26 +896,107 @@ def save_best_frame_local(session_id: str, frame_bytes: bytes, frame_index: int,
     return path
 
 
+def normalize_cinematic_role(value: str) -> str:
+    raw = re.sub(r"[^a-z0-9]+", "_", (value or "").strip().lower()).strip("_")
+    mapping = {
+        "hero": "hero_object",
+        "hero_shot": "hero_object",
+        "object": "hero_object",
+        "detail": "detail_texture",
+        "texture": "detail_texture",
+        "context": "reveal_context",
+        "wide": "reveal_context",
+        "reveal": "reveal_context",
+        "problem": "problem_area",
+        "problem_corner": "problem_area",
+        "opportunity": "room_opportunity",
+        "room": "room_opportunity",
+        "fit": "fit_check",
+        "fitcheck": "fit_check",
+    }
+    normalized = mapping.get(raw, raw)
+    return normalized if normalized in set(ROLE_PRIORITY) else "reveal_context"
+
+
+def frame_sort_key(frame: Dict[str, Any]) -> Tuple[int, int, int]:
+    role = normalize_cinematic_role(frame.get("cinematic_role", ""))
+    score = int(frame.get("score_0_to_100", 0))
+    duplicate_likelihood = int(frame.get("duplicate_likelihood_0_to_100", 0))
+    role_bonus = 8 if role in {"hero_object", "room_opportunity", "fit_check"} else 0
+    return (score + role_bonus, -duplicate_likelihood, int(frame.get("frame_index", 0)))
+
+
+def rebalance_frame_pool(frames: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for frame in frames:
+        normalized = {**frame, "cinematic_role": normalize_cinematic_role(frame.get("cinematic_role", ""))}
+        grouped.setdefault(normalized["cinematic_role"], []).append(normalized)
+
+    for bucket in grouped.values():
+        bucket.sort(key=frame_sort_key, reverse=True)
+
+    ordered: List[Dict[str, Any]] = []
+    leftovers: List[Dict[str, Any]] = []
+
+    for role in ROLE_PRIORITY:
+        bucket = grouped.pop(role, [])
+        if bucket:
+            ordered.append(bucket[0])
+            leftovers.extend(bucket[1:])
+
+    for _, bucket in sorted(grouped.items(), key=lambda item: frame_sort_key(item[1][0]), reverse=True):
+        ordered.append(bucket[0])
+        leftovers.extend(bucket[1:])
+
+    leftovers.sort(key=frame_sort_key, reverse=True)
+
+    deduped: List[Dict[str, Any]] = []
+    seen_paths = set()
+    for frame in ordered + leftovers:
+        key = frame.get("local_path") or f"{frame.get('ts_ms')}-{frame.get('moment_label')}"
+        if key in seen_paths:
+            continue
+        seen_paths.add(key)
+        deduped.append(frame)
+
+    return deduped
+
+
 def select_top_frames(existing: List[Dict[str, Any]], candidate: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], bool, Optional[str]]:
+    candidate = {**candidate, "cinematic_role": normalize_cinematic_role(candidate.get("cinematic_role", ""))}
     candidate_score = int(candidate.get("score_0_to_100", 0))
     candidate_hash = int(candidate["ahash"], 16)
     replaced_path: Optional[str] = None
+
     for index, frame in enumerate(list(existing)):
         frame_hash = int(frame["ahash"], 16)
         if hamming_distance(candidate_hash, frame_hash) <= 6:
-            if candidate_score > int(frame.get("score_0_to_100", 0)) + 4:
+            same_role = normalize_cinematic_role(frame.get("cinematic_role", "")) == candidate["cinematic_role"]
+            required_margin = 4 if same_role else 8
+            if candidate_score > int(frame.get("score_0_to_100", 0)) + required_margin:
                 replaced_path = frame.get("local_path")
                 existing[index] = candidate
-                existing.sort(key=lambda item: int(item.get("score_0_to_100", 0)), reverse=True)
-                return existing[:KEEP_BEST_LIMIT], True, replaced_path
-            return existing, False, None
-    existing.append(candidate)
-    existing.sort(key=lambda item: int(item.get("score_0_to_100", 0)), reverse=True)
-    if len(existing) > KEEP_BEST_LIMIT:
-        dropped = existing.pop()
-        dropped_path = dropped.get("local_path")
-        return existing, dropped is candidate, dropped_path
-    return existing, True, None
+                return rebalance_frame_pool(existing)[:KEEP_BEST_LIMIT], True, replaced_path
+            return rebalance_frame_pool(existing)[:KEEP_BEST_LIMIT], False, None
+
+    if int(candidate.get("duplicate_likelihood_0_to_100", 0)) >= 96 and candidate_score < 90:
+        return rebalance_frame_pool(existing)[:KEEP_BEST_LIMIT], False, None
+
+    combined = rebalance_frame_pool(existing + [candidate])
+    kept = combined[:KEEP_BEST_LIMIT]
+    kept_paths = {frame.get("local_path") for frame in kept}
+
+    if candidate.get("local_path") not in kept_paths:
+        return kept, False, candidate.get("local_path")
+
+    dropped_old_path = None
+    for frame in existing:
+        path = frame.get("local_path")
+        if path not in kept_paths:
+            dropped_old_path = path
+            break
+
+    return kept, True, dropped_old_path
 
 
 async def ensure_live_agent(state: Dict[str, Any]) -> Optional[LiveTextAgent]:
@@ -879,25 +1021,73 @@ async def maybe_live_reply(state: Dict[str, Any], user_text: str) -> str:
 
 def build_story_seed(state: Dict[str, Any]) -> Dict[str, Any]:
     stage1 = (state.get("stage1") or {}).get("analysis") or {}
-    best_frames = state.get("best_frames") or []
-    top_labels = [frame.get("moment_label") for frame in best_frames[:3] if frame.get("moment_label")]
-    idea = stage1.get("story_signal") or "A compact vertical story built from the strongest moments in this place."
-    if top_labels:
-        idea = f"{idea} Best moments: {', '.join(top_labels[:3])}."
+    best_frames = rebalance_frame_pool(list(state.get("best_frames") or []))
+    export_frames = best_frames[:EXPORT_BEST_COUNT]
+
     hero_local = (state.get("stage1") or {}).get("local_path")
     hero_preview_url = None
     if hero_local:
         p = Path(hero_local)
         hero_preview_url = f"/session_cache/{slugify(state['session_id'])}/stage1/{p.name}"
+
+    selected_roles = [normalize_cinematic_role(frame.get("cinematic_role", "")) for frame in export_frames]
+    selected_labels = [frame.get("moment_label") for frame in export_frames if frame.get("moment_label")]
+
+    hook = stage1.get("story_signal") or "This object could solve a small room need if we find the right place for it."
+    description = stage1.get("one_line_summary") or "A clean hero frame plus a few grounded support shots."
+    idea = hook
+    if selected_labels:
+        idea = f"{hook} Supporting moments: {', '.join(selected_labels[:3])}."
+
     return {
         "session_id": state["session_id"],
         "title": stage1.get("object_label") or "Story seed",
-        "description": stage1.get("one_line_summary") or "A clean hero frame and a few supporting moments.",
+        "description": description,
         "idea": idea,
+        "hook": hook,
+        "tone": "calm, warm, grounded, inventive",
+        "visual_style": "clean motion-comic grounded in real room photos",
+        "generation_strategy": "hero still + 2-3 complementary support stills, then storyboard JSON and optional single hero clip",
         "hero_preview_url": hero_preview_url,
+        "hero_image": hero_preview_url,
         "best_count": len(best_frames),
+        "selected_roles": selected_roles,
+        "selected_frames": [
+            {
+                "moment_label": frame.get("moment_label"),
+                "cinematic_role": frame.get("cinematic_role"),
+                "best_future_use": frame.get("best_future_use"),
+                "score_0_to_100": frame.get("score_0_to_100"),
+                "preview_url": frame.get("preview_url") or frame.get("local_preview_url"),
+                "local_preview_url": frame.get("local_preview_url"),
+            }
+            for frame in export_frames
+        ],
         "created_at": utc_iso(),
     }
+
+
+def build_idea_text(story_seed: Dict[str, Any], export_frames: List[Dict[str, Any]]) -> str:
+    lines = [
+        story_seed.get("title") or "Story seed",
+        "",
+        f"Hook: {story_seed.get('hook') or story_seed.get('idea') or ''}",
+        f"Tone: {story_seed.get('tone') or ''}",
+        f"Visual style: {story_seed.get('visual_style') or ''}",
+        f"Generation strategy: {story_seed.get('generation_strategy') or ''}",
+        "",
+        "Selected shots:",
+    ]
+    for index, frame in enumerate(export_frames, start=1):
+        lines.append(
+            f"{index}. {frame.get('cinematic_role', 'shot')} — "
+            f"{frame.get('moment_label', 'Moment')} — "
+            f"score {frame.get('score_0_to_100', 0)} — "
+            f"use: {frame.get('best_future_use', 'supporting still')}"
+        )
+    lines.append("")
+    lines.append(f"Idea: {story_seed.get('idea') or ''}")
+    return "\n".join(lines).strip() + "\n"
 
 
 # ---------- html ----------
@@ -960,6 +1150,7 @@ async def api_config() -> Dict[str, Any]:
         "auto_stop_keep_count": AUTO_STOP_KEEP_COUNT,
         "auto_stop_best_score": AUTO_STOP_BEST_SCORE,
         "auto_stop_max_frames": AUTO_STOP_MAX_FRAMES,
+        "export_best_count": EXPORT_BEST_COUNT,
     }
 
 
@@ -1068,13 +1259,19 @@ async def api_live_start(session_id: str = Form(...)) -> Dict[str, Any]:
     state = STORE.get_or_create(session_id)
     if not state.get("stage1"):
         raise HTTPException(status_code=400, detail="Run stage 1 first")
+
     agent = await ensure_live_agent(state)
-    opening = state["stage1"]["analysis"].get("opening_coach_line") or "Let us make one clean vertical shot first."
+    opening = state["stage1"]["analysis"].get("opening_coach_line") or "Scan the room for where this could help."
+
     if agent is not None and agent.enabled:
         try:
-            opening = await agent.ask("We are starting now. Give the first short camera instruction.")
+            opening = await agent.ask(
+                "We are starting phase 2 now. Give one short first instruction for a one-second stop-shot room scan."
+            )
         except Exception:
             pass
+
+    opening = sanitize_guide_text(opening or "Scan the room for where this could help.")
     await STORE.broadcast(session_id, {"type": "live_guidance", "text": opening})
     return {"ok": True, "session_id": session_id, "guidance": opening}
 
