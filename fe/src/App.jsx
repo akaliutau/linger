@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-const APP_TITLE = 'Linger Story'
+const APP_TITLE = 'Linger Story Camera'
 const HERO_TIMEOUT_MS = 25000
 const FRAME_TIMEOUT_MS = 18000
 const FINALIZE_TIMEOUT_MS = 45000
@@ -545,6 +545,7 @@ function LayoutFixStyles() {
         border-radius: 20px;
         font-size: 17px;
         line-height: 1.35;
+        transparent: 100%;
       }
 
       .camera-controls {
@@ -701,8 +702,22 @@ function LayoutFixStyles() {
         }
       }
 
+      .review-screen {
+        position: relative !important;
+        min-height: auto !important;
+        height: auto !important;
+        overflow: visible !important;
+        padding: 20px 16px calc(env(safe-area-inset-bottom, 0px) + 132px) !important;
+      }
+
       .review-shell {
-        padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 28px);
+        width: min(720px, 100%);
+        margin: 0 auto;
+        padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 132px);
+      }
+
+      .review-card {
+        margin-bottom: calc(env(safe-area-inset-bottom, 0px) + 36px);
       }
 
       .review-header {
@@ -775,10 +790,21 @@ function LayoutFixStyles() {
       }
 
       .review-actions {
+        position: sticky;
+        bottom: max(calc(env(safe-area-inset-bottom, 0px) + 12px), 12px);
+        z-index: 3;
         display: flex;
         gap: 12px;
         flex-wrap: wrap;
         margin-top: 18px;
+        padding-top: 12px;
+        padding-bottom: 2px;
+        background: linear-gradient(180deg, rgba(5, 7, 11, 0) 0%, rgba(5, 7, 11, 0.72) 30%, rgba(5, 7, 11, 0.92) 100%);
+      }
+
+      .review-actions .primary-button,
+      .review-actions .secondary-button {
+        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
       }
 
       .debug-toggle {
@@ -833,9 +859,10 @@ function LayoutFixStyles() {
         }
 
         .status-strip {
-          bottom: calc(env(safe-area-inset-bottom, 0px) + 32px);
+          bottom: calc(env(safe-area-inset-bottom, 0px) + 132px);
           width: min(370px, calc(100% - 28px));
           font-size: 16px;
+          opacity: 30%;
         }
 
         .ghost-button,
@@ -902,7 +929,6 @@ function TopHud({ score, kept, framesSeen, guide, latencyAvg }) {
       <div className="hud-cluster">
         <MiniStat label="kept" value={`${kept}`} />
         <MiniStat label="frames" value={`${framesSeen}`} />
-        <MiniStat label="avg ms" value={latencyAvg ? `${latencyAvg}` : '—'} />
       </div>
       <div className="guide-pill">{guide}</div>
     </div>
@@ -1929,8 +1955,19 @@ export default function App() {
   }, [consecutiveErrors])
 
   useEffect(() => {
-    updateDebug({ phase, sessionId })
-  }, [phase, sessionId, streamNonce, cameraViewport?.cssWidth, cameraViewport?.cssHeight])
+    if (phase !== 'review') return
+    const root = document.documentElement
+    const body = document.body
+    const prevRootOverflowY = root.style.overflowY
+    const prevBodyOverflowY = body.style.overflowY
+    root.style.overflowY = 'auto'
+    body.style.overflowY = 'auto'
+    window.scrollTo({ top: 0, behavior: 'auto' })
+    return () => {
+      root.style.overflowY = prevRootOverflowY
+      body.style.overflowY = prevBodyOverflowY
+    }
+  }, [phase])
 
   useEffect(() => {
     const onError = (event) => {
