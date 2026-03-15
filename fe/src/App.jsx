@@ -236,23 +236,39 @@ async function requestAppFullscreen() {
 
 function AppChromeStyles() {
   return (
-    <style>{`
-      html, body, #root {
+    <style>{`      html, body, #root {
         margin: 0;
         min-height: 100%;
         height: 100%;
+        width: 100%;
         background: #05070b;
+        color: #ffffff;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      * {
+        box-sizing: border-box;
       }
       body {
-        overscroll-behavior: none;
+        overscroll-behavior-y: contain;
+      }
+      button,
+      input,
+      textarea,
+      select {
+        font: inherit;
+      }
+      a {
+        color: inherit;
       }
       .app-shell {
+        position: relative;
         min-height: 100dvh;
-        height: 100dvh;
+        width: 100%;
         background: #05070b;
-        overflow: hidden;
+        overflow-x: hidden;
       }
       .screen {
+        width: 100%;
         min-height: 100dvh;
       }
       .camera-screen,
@@ -263,12 +279,36 @@ function AppChromeStyles() {
         overflow: hidden;
         background: #05070b;
       }
+      .intro-screen,
+      .review-screen {
+        position: relative;
+        min-height: 100dvh;
+        overflow-x: hidden;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        background: #05070b;
+      }
       .camera-video {
+        position: absolute;
+        inset: 0;
         width: 100%;
         height: 100%;
-        object-fit: cover;
+        object-fit: contain;
+        object-position: center center;
         transform: translateZ(0);
         backface-visibility: hidden;
+        background: #05070b;
+      }
+      .camera-overlay {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+      }
+      .top-gradient {
+        background: linear-gradient(180deg, rgba(5,7,11,0.72) 0%, rgba(5,7,11,0.18) 22%, rgba(5,7,11,0) 42%);
+      }
+      .bottom-gradient {
+        background: linear-gradient(180deg, rgba(5,7,11,0) 50%, rgba(5,7,11,0.18) 72%, rgba(5,7,11,0.88) 100%);
       }
       .hero-thumb-wrap {
         position: absolute;
@@ -297,32 +337,190 @@ function AppChromeStyles() {
         left: 18px;
         top: calc(env(safe-area-inset-top, 0px) + 18px);
         z-index: 7;
+        padding: 10px 14px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: rgba(255,255,255,0.94);
+        background: rgba(15, 19, 28, 0.68);
+        border: 1px solid rgba(255,255,255,0.08);
+        backdrop-filter: blur(14px);
+      }
+      .hud.top {
+        position: absolute;
+        left: 16px;
+        right: 16px;
+        top: calc(env(safe-area-inset-top, 0px) + 68px);
+        z-index: 7;
+        display: grid;
+        gap: 10px;
+        padding-right: 102px;
+      }
+      .score-pill,
+      .guide-pill,
+      .mini-stat {
+        backdrop-filter: blur(14px);
+        background: rgba(15, 19, 28, 0.68);
+        border: 1px solid rgba(255,255,255,0.08);
+        box-shadow: 0 12px 32px rgba(0,0,0,0.18);
+      }
+      .score-pill {
+        display: inline-flex;
+        align-items: baseline;
+        gap: 10px;
+        width: fit-content;
+        padding: 10px 14px;
+        border-radius: 16px;
+      }
+      .score-pill strong {
+        font-size: 24px;
+        line-height: 1;
+      }
+      .score-pill.low strong { color: #ffc3c3; }
+      .score-pill.mid strong { color: #ffe69f; }
+      .score-pill.good strong { color: #bbf7d0; }
+      .score-pill.excellent strong { color: #93c5fd; }
+      .score-label {
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(255,255,255,0.6);
+      }
+      .hud-cluster {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .mini-stat {
+        min-width: 72px;
+        padding: 8px 10px;
+        border-radius: 14px;
+      }
+      .mini-stat span {
+        display: block;
+        font-size: 10px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(255,255,255,0.56);
+        margin-bottom: 4px;
+      }
+      .mini-stat strong {
+        display: block;
+        font-size: 15px;
+        line-height: 1.1;
+      }
+      .guide-pill {
+        display: inline-block;
+        max-width: min(100%, 420px);
+        padding: 11px 14px;
+        border-radius: 16px;
+        color: rgba(255,255,255,0.86);
+        line-height: 1.35;
       }
       .status-strip {
         position: absolute;
         left: 16px;
         right: 16px;
-        bottom: calc(env(safe-area-inset-bottom, 0px) + 532px);
+        bottom: max(calc(env(safe-area-inset-bottom, 0px) + 128px), 128px);
         z-index: 7;
+        padding: 12px 14px;
+        border-radius: 18px;
+        color: rgba(255,255,255,0.92);
+        background: rgba(12, 16, 24, 0.78);
+        border: 1px solid rgba(255,255,255,0.08);
+        box-shadow: 0 18px 44px rgba(0,0,0,0.22);
         backdrop-filter: blur(14px);
+        line-height: 1.35;
       }
       .camera-controls {
         position: absolute;
         left: 18px;
         right: 18px;
-        bottom: calc(env(safe-area-inset-bottom, 0px) + 76px) !important;
+        bottom: max(calc(env(safe-area-inset-bottom, 0px) + 30px), 30px);
         z-index: 8;
         display: flex;
-        align-items: center;
-        justify-content: center;
+        align-items: flex-end;
+        justify-content: space-between;
         gap: 16px;
       }
       .camera-controls .ghost-button,
       .camera-controls .capture-button {
         touch-action: manipulation;
       }
+      .ghost-button,
+      .secondary-button {
+        min-height: 52px;
+        border-radius: 999px;
+        padding: 0 18px;
+        border: 1px solid rgba(255,255,255,0.12);
+        background: rgba(255,255,255,0.08);
+        color: #ffffff;
+        font-weight: 600;
+        backdrop-filter: blur(14px);
+      }
+      .ghost-spacer {
+        width: 92px;
+        flex: 0 0 92px;
+      }
       .capture-button {
+        position: relative;
+        width: 92px;
+        height: 92px;
+        flex: 0 0 92px;
+        border: 0;
+        border-radius: 999px;
+        background: rgba(255,255,255,0.08);
+        color: #ffffff;
+        box-shadow: 0 18px 44px rgba(0,0,0,0.28);
         transform: translateZ(0);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+      }
+      .capture-button.busy {
+        opacity: 0.82;
+      }
+      .capture-ring {
+        position: absolute;
+        inset: 10px;
+        border-radius: 999px;
+        border: 4px solid rgba(255,255,255,0.96);
+        box-shadow: inset 0 0 0 1px rgba(0,0,0,0.08);
+      }
+      .capture-text {
+        position: relative;
+        z-index: 1;
+        max-width: 70px;
+        text-align: center;
+        font-size: 11px;
+        line-height: 1.15;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      .primary-button {
+        min-height: 56px;
+        border-radius: 18px;
+        padding: 0 20px;
+        border: 0;
+        background: linear-gradient(180deg, #ffffff 0%, #dfe6f3 100%);
+        color: #0d1117;
+        font-weight: 700;
+        box-shadow: 0 14px 36px rgba(0,0,0,0.2);
+      }
+      .primary-button.xl {
+        width: 100%;
+        min-height: 60px;
+        font-size: 17px;
+      }
+      .primary-button:disabled,
+      .secondary-button:disabled,
+      .ghost-button:disabled,
+      .capture-button:disabled {
+        opacity: 0.66;
       }
       .hero-capture-fx {
         position: absolute;
@@ -362,16 +560,19 @@ function AppChromeStyles() {
         align-items: center;
         justify-content: center;
         padding: calc(env(safe-area-inset-top, 0px) + 28px) 20px calc(env(safe-area-inset-bottom, 0px) + 28px);
-        box-sizing: border-box;
+      }
+      .wait-card,
+      .intro-card,
+      .review-card {
+        background: linear-gradient(180deg, rgba(25,30,40,0.96), rgba(13,16,22,0.98));
+        border: 1px solid rgba(255,255,255,0.08);
+        box-shadow: 0 24px 90px rgba(0,0,0,0.38);
+        color: white;
       }
       .wait-card {
         width: min(100%, 560px);
         padding: 28px 22px;
         border-radius: 28px;
-        background: linear-gradient(180deg, rgba(25,30,40,0.96), rgba(13,16,22,0.98));
-        border: 1px solid rgba(255,255,255,0.08);
-        box-shadow: 0 24px 90px rgba(0,0,0,0.38);
-        color: white;
       }
       .wait-card h2 {
         margin: 0 0 10px;
@@ -392,16 +593,20 @@ function AppChromeStyles() {
         animation: spin 0.9s linear infinite;
         margin-bottom: 18px;
       }
-      .wait-link-block {
-        margin-top: 22px;
+      .wait-link-block,
+      .pipeline-box,
+      .idea-box {
+        margin-top: 18px;
         padding: 14px;
         border-radius: 18px;
         background: rgba(255,255,255,0.05);
         border: 1px solid rgba(255,255,255,0.08);
       }
-      .wait-link-label {
+      .wait-link-label,
+      .idea-label,
+      .eyebrow,
+      .intro-meta {
         display: block;
-        margin-bottom: 8px;
         font-size: 12px;
         letter-spacing: 0.08em;
         text-transform: uppercase;
@@ -430,6 +635,174 @@ function AppChromeStyles() {
       }
       .wait-dots span:nth-child(2) { animation-delay: 120ms; }
       .wait-dots span:nth-child(3) { animation-delay: 240ms; }
+      .intro-screen {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: calc(env(safe-area-inset-top, 0px) + 24px) 18px calc(env(safe-area-inset-bottom, 0px) + 24px);
+      }
+      .intro-glow {
+        position: absolute;
+        inset: 0;
+        background:
+          radial-gradient(circle at 20% 20%, rgba(84, 105, 212, 0.22), transparent 36%),
+          radial-gradient(circle at 78% 30%, rgba(16, 185, 129, 0.14), transparent 28%),
+          radial-gradient(circle at 50% 100%, rgba(255, 255, 255, 0.06), transparent 30%);
+        pointer-events: none;
+      }
+      .intro-card {
+        position: relative;
+        z-index: 1;
+        width: min(100%, 520px);
+        padding: 28px 22px;
+        border-radius: 28px;
+      }
+      .intro-card h1 {
+        margin: 10px 0 12px;
+        font-size: clamp(32px, 7vw, 52px);
+        line-height: 0.96;
+        letter-spacing: -0.04em;
+      }
+      .intro-card p,
+      .muted,
+      .pipeline-box span,
+      .best-pill span,
+      .best-pill small {
+        color: rgba(255,255,255,0.74);
+      }
+      .intro-card p,
+      .muted,
+      .pipeline-box span,
+      .best-pill span,
+      .best-pill small,
+      .idea-box p {
+        line-height: 1.5;
+      }
+      .intro-meta {
+        margin-top: 14px;
+      }
+      .review-shell {
+        width: 100%;
+        padding: calc(env(safe-area-inset-top, 0px) + 18px) 16px calc(env(safe-area-inset-bottom, 0px) + 28px);
+      }
+      .review-card {
+        width: min(100%, 720px);
+        margin: 0 auto;
+        padding: 18px;
+        border-radius: 28px;
+      }
+      .review-header {
+        display: grid;
+        grid-template-columns: 104px minmax(0, 1fr);
+        gap: 16px;
+        align-items: start;
+      }
+      .review-hero {
+        width: 104px;
+        height: 136px;
+        border-radius: 18px;
+        object-fit: cover;
+        background: rgba(255,255,255,0.08);
+      }
+      .review-header h2 {
+        margin: 10px 0 8px;
+        font-size: clamp(24px, 5.6vw, 36px);
+        line-height: 1;
+        letter-spacing: -0.03em;
+      }
+      .idea-box p {
+        margin: 8px 0 0;
+      }
+      .best-strip {
+        display: grid;
+        gap: 12px;
+        margin-top: 18px;
+      }
+      .best-pill {
+        display: grid;
+        grid-template-columns: 92px minmax(0, 1fr);
+        gap: 12px;
+        align-items: start;
+        padding: 10px;
+        border-radius: 18px;
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.07);
+      }
+      .best-pill img {
+        width: 92px;
+        height: 92px;
+        border-radius: 14px;
+        object-fit: cover;
+        background: rgba(255,255,255,0.08);
+      }
+      .best-pill strong,
+      .pipeline-box strong {
+        display: block;
+        margin-bottom: 4px;
+      }
+      .best-pill span,
+      .best-pill small,
+      .pipeline-box span {
+        display: block;
+      }
+      .pipeline-box a {
+        color: #cce0ff;
+        font-weight: 600;
+      }
+      .review-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 20px;
+      }
+      .review-actions > button {
+        flex: 1 1 180px;
+      }
+      .debug-toggle {
+        position: fixed;
+        right: 14px;
+        bottom: calc(env(safe-area-inset-bottom, 0px) + 12px);
+        z-index: 24;
+        min-height: 42px;
+        border-radius: 999px;
+        padding: 0 14px;
+        border: 1px solid rgba(255,255,255,0.12);
+        background: rgba(15,19,28,0.82);
+        color: #ffffff;
+        backdrop-filter: blur(14px);
+      }
+      .debug-drawer {
+        position: fixed;
+        left: 12px;
+        right: 12px;
+        bottom: calc(env(safe-area-inset-bottom, 0px) + 62px);
+        z-index: 23;
+        max-height: min(58dvh, 520px);
+        overflow: auto;
+        border-radius: 20px;
+        padding: 14px;
+        background: rgba(7,10,15,0.96);
+        border: 1px solid rgba(255,255,255,0.08);
+        box-shadow: 0 24px 80px rgba(0,0,0,0.44);
+      }
+      .debug-drawer h3 {
+        margin: 0 0 8px;
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: rgba(255,255,255,0.6);
+      }
+      .debug-drawer section + section {
+        margin-top: 12px;
+      }
+      .debug-drawer pre {
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-size: 12px;
+        line-height: 1.4;
+        color: rgba(255,255,255,0.86);
+      }
       @keyframes heroBoxShrink {
         0% {
           opacity: 0;
@@ -461,6 +834,44 @@ function AppChromeStyles() {
       @keyframes waitDot {
         0%, 100% { opacity: 0.35; transform: translateY(0); }
         50% { opacity: 1; transform: translateY(-4px); }
+      }
+      @media (max-width: 420px) {
+        .hero-thumb,
+        .hero-capture-fly-thumb {
+          width: 76px;
+          height: 102px;
+          border-radius: 18px;
+        }
+        .hud.top {
+          padding-right: 88px;
+        }
+        .guide-pill {
+          max-width: calc(100% - 8px);
+        }
+        .status-strip {
+          bottom: max(calc(env(safe-area-inset-bottom, 0px) + 118px), 118px);
+          font-size: 14px;
+        }
+        .camera-controls {
+          bottom: max(calc(env(safe-area-inset-bottom, 0px) + 24px), 24px);
+        }
+        .capture-button {
+          width: 86px;
+          height: 86px;
+          flex-basis: 86px;
+        }
+        .ghost-spacer {
+          width: 86px;
+          flex-basis: 86px;
+        }
+        .review-header,
+        .best-pill {
+          grid-template-columns: 88px minmax(0, 1fr);
+        }
+        .review-hero {
+          width: 88px;
+          height: 118px;
+        }
       }
     `}</style>
   )
@@ -969,8 +1380,9 @@ export default function App() {
         stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: { ideal: 'environment' },
-            width: { ideal: 720 },
-            height: { ideal: 1280 },
+            width: { ideal: 1080 },
+            height: { ideal: 1920 },
+            aspectRatio: { ideal: 9 / 16 },
           },
           audio: false,
         })
@@ -979,6 +1391,21 @@ export default function App() {
         pushEvent('camera_stream_retry', { error: shortError(firstErr) })
         stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
         pushEvent('camera_stream_opened', { strategy: 'fallback', trackInfo: summarizeTrack(stream.getVideoTracks?.()[0]) })
+      }
+
+      const track = stream?.getVideoTracks?.()[0] || null
+      if (track) {
+        try {
+          track.contentHint = 'detail'
+        } catch {}
+        try {
+          const capabilities = track.getCapabilities?.() || {}
+          if (capabilities.zoom && Number.isFinite(capabilities.zoom.min)) {
+            await track.applyConstraints({ advanced: [{ zoom: capabilities.zoom.min }] })
+          }
+        } catch (err) {
+          pushEvent('camera_zoom_reset_failed', { error: shortError(err) })
+        }
       }
 
       if (!mountedRef.current) {
