@@ -612,11 +612,24 @@ class SessionStore:
                         "best_score": 0,
                     },
                     "best_frames": [],
+                    "fallback_top_frame": None,
                     "recent_events": [],
                     "story_seed": None,
                     "finalized": None,
                     "debug": {},
                 }
+            state.setdefault("best_frames", [])
+            state.setdefault("fallback_top_frame", None)
+            state.setdefault("recent_events", [])
+            state.setdefault("story_seed", None)
+            state.setdefault("finalized", None)
+            state.setdefault("debug", {})
+            state.setdefault("live_metrics", {
+                "frames_seen": 0,
+                "frames_kept": 0,
+                "latency_ms_total": 0,
+                "best_score": 0,
+            })
             state["_lock"] = asyncio.Lock()
             state["_agent"] = None
             self.sessions[session_id] = state
@@ -999,6 +1012,30 @@ def select_top_frames(existing: List[Dict[str, Any]], candidate: Dict[str, Any])
     return kept, True, dropped_old_path
 
 
+def update_fallback_top_frame(existing: Optional[Dict[str, Any]], candidate: Dict[str, Any]) -> Tuple[Dict[str, Any], Optional[str], bool]:
+    candidate = {**candidate, "cinematic_role": normalize_cinematic_role(candidate.get("cinematic_role", ""))}
+    candidate_score = int(candidate.get("score_0_to_100", 0))
+    candidate_role = candidate["cinematic_role"]
+
+    if not existing:
+        return candidate, None, True
+
+    existing_role = normalize_cinematic_role(existing.get("cinematic_role", ""))
+    existing_score = int(existing.get("score_0_to_100", 0))
+    role_rank = {name: idx for idx, name in enumerate(ROLE_PRIORITY)}
+
+    should_replace = False
+    if candidate_score > existing_score:
+        should_replace = True
+    elif candidate_score == existing_score and role_rank.get(candidate_role, 999) < role_rank.get(existing_role, 999):
+        should_replace = True
+
+    if should_replace:
+        return candidate, existing.get("local_path"), True
+
+    return existing, None, False
+
+
 async def ensure_live_agent(state: Dict[str, Any]) -> Optional[LiveTextAgent]:
     if state.get("_agent") is None and state.get("stage1") is not None:
         agent = LiveTextAgent(session_id=state["session_id"], stage1_payload=state["stage1"]["analysis"])
@@ -1022,7 +1059,11 @@ async def maybe_live_reply(state: Dict[str, Any], user_text: str) -> str:
 def build_story_seed(state: Dict[str, Any]) -> Dict[str, Any]:
     stage1 = (state.get("stage1") or {}).get("analysis") or {}
     best_frames = rebalance_frame_pool(list(state.get("best_frames") or []))
-    export_frames = best_frames[:EXPORT_BEST_COUNT]
+    if best_frames:
+        export_frames = best_frames[:EXPORT_BEST_COUNT]
+    else:
+        fallback = state.get("fallback_top_frame")
+        export_frames = [fallback] if fallback else []
 
     hero_local = (state.get("stage1") or {}).get("local_path")
     hero_preview_url = None
@@ -1219,6 +1260,7 @@ async def api_stage1_analyze_photo(
     }
     state["stage1_upload"] = upload.__dict__
     state["best_frames"] = []
+    state["fallback_top_frame"] = None
     state["live_metrics"] = {
         "frames_seen": 0,
         "frames_kept": 0,
@@ -1305,8 +1347,12 @@ async def api_live_frame(
         temperature=0.15,
         fallback=quick_frame_fallback(normalized_bytes, width, height),
     )
+    analysis["cinematic_role"] = normalize_cinematic_role(analysis.get("cinematic_role", ""))
     score = int(analysis.get("score_0_to_100", 0))
-    keep_requested = bool(analysis.get("keep")) and score >= MIN_KEEP_SCORE
+    duplicate_likelihood = int(analysis.get("duplicate_likelihood_0_to_100", 0))
+    keep_requested = bool(analysis.get("keep")) and score >= MIN_KEEP_SCORE and not (
+        duplicate_likelihood >= 97 and score < 92
+    )
     local_path = save_best_frame_local(session_id, normalized_bytes, frame_index, score)
     candidate = {
         **analysis,
@@ -1323,19 +1369,45 @@ async def api_live_frame(
 
     selected = False
     replaced_path: Optional[str] = None
+    fallback_replaced_path: Optional[str] = None
+    is_fallback_top = False
+
     if keep_requested:
         state["best_frames"], selected, replaced_path = select_top_frames(state.get("best_frames", []), candidate)
-    else:
+
+    state["fallback_top_frame"], fallback_replaced_path, is_fallback_top = update_fallback_top_frame(
+        state.get("fallback_top_frame"),
+        candidate,
+    )
+
+    candidate_path = str(local_path)
+    is_in_best = any(frame.get("local_path") == candidate_path for frame in state.get("best_frames", []))
+    fallback_frame = state.get("fallback_top_frame") or {}
+    is_fallback_path = fallback_frame.get("local_path") == candidate_path
+
+    if not is_in_best and not is_fallback_path:
         try:
             local_path.unlink(missing_ok=True)
         except TypeError:
             if local_path.exists():
                 local_path.unlink()
 
-    if replaced_path and replaced_path != str(local_path):
-        old_path = Path(replaced_path)
-        if old_path.exists():
-            old_path.unlink()
+    if replaced_path and replaced_path != candidate_path:
+        still_used = (
+            any(frame.get("local_path") == replaced_path for frame in state.get("best_frames", []))
+            or ((state.get("fallback_top_frame") or {}).get("local_path") == replaced_path)
+        )
+        if not still_used:
+            old_path = Path(replaced_path)
+            if old_path.exists():
+                old_path.unlink()
+
+    if fallback_replaced_path and fallback_replaced_path != candidate_path:
+        still_used = any(frame.get("local_path") == fallback_replaced_path for frame in state.get("best_frames", []))
+        if not still_used:
+            old_path = Path(fallback_replaced_path)
+            if old_path.exists():
+                old_path.unlink()
 
     metrics = state["live_metrics"]
     metrics["frames_seen"] += 1
@@ -1344,27 +1416,45 @@ async def api_live_frame(
     metrics["best_score"] = max(metrics.get("best_score", 0), score)
     avg_latency_ms = int(metrics["latency_ms_total"] / max(metrics["frames_seen"], 1))
 
-    guidance_text = analysis.get("micro_direction") or "Shift, steady, and simplify the frame."
+    role_guides = {
+        "room_opportunity": "Good corner. Take one tighter proof shot.",
+        "fit_check": "Nice fit. Take one wider safety shot.",
+        "hero_object": "Great hero. Take one texture backup.",
+        "detail_texture": "Good detail. Now get one wider context shot.",
+        "problem_area": "Good problem signal. Show the surrounding area.",
+        "reveal_context": "Useful reveal. Take one closer support shot.",
+    }
+    guidance_text = sanitize_guide_text(analysis.get("micro_direction") or "")
+    if not guidance_text:
+        guidance_text = role_guides.get(
+            analysis["cinematic_role"],
+            "Move slowly and capture one cleaner proof shot.",
+        )
+
     kept_total = len(state.get("best_frames", []))
     should_stop = False
     stop_reason = ""
-    if score >= 88 and selected:
-        guidance_text = "Nice. Take one safer backup, then stop."
+
+    if score >= 90 and selected:
+        guidance_text = "Strong set. One safe backup, then stop."
+
     if kept_total >= AUTO_STOP_KEEP_COUNT and metrics.get("best_score", 0) >= AUTO_STOP_BEST_SCORE:
         should_stop = True
-        stop_reason = "Enough strong shots collected."
-        guidance_text = "Enough strong shots. Tap Enough moment."
+        stop_reason = "Enough complementary shots collected."
+        guidance_text = "Collection ready. Use the best shots now."
     elif metrics["frames_seen"] >= AUTO_STOP_MAX_FRAMES:
         should_stop = True
-        stop_reason = "Reached capture limit. Use the best shots now."
-        guidance_text = "We have enough. Use the best shots now."
+        stop_reason = "Reached capture limit. Best attempt saved."
+        guidance_text = "We have enough. Use the best shot or try another pass."
 
     recent_event = {
         "type": "frame",
         "frame_index": frame_index,
         "selected": selected,
+        "fallback_selected": is_fallback_top,
         "score": score,
         "moment_label": analysis.get("moment_label"),
+        "cinematic_role": analysis.get("cinematic_role"),
         "latency_ms": round((time.time() - started) * 1000),
         "guidance": guidance_text,
         "should_stop": should_stop,
@@ -1384,7 +1474,9 @@ async def api_live_frame(
         image_size=f"{width}x{height}",
         keep_requested=keep_requested,
         selected=selected,
+        fallback_selected=is_fallback_top,
         score=score,
+        role=analysis.get("cinematic_role"),
         kept_total=kept_total,
         avg_latency_ms=avg_latency_ms,
         local_name=local_path.name,
@@ -1395,8 +1487,10 @@ async def api_live_frame(
         {
             "type": "frame_result",
             "selected": selected,
+            "fallback_selected": is_fallback_top,
             "frame": {k: v for k, v in candidate.items() if k != "ahash"},
             "kept_total": kept_total,
+            "effective_kept_total": max(kept_total, 1 if state.get("fallback_top_frame") else 0),
             "avg_latency_ms": avg_latency_ms,
             "guidance": guidance_text,
             "should_stop": should_stop,
@@ -1407,10 +1501,12 @@ async def api_live_frame(
         {
             "ok": True,
             "selected": selected,
+            "fallback_selected": is_fallback_top,
             "analysis": analysis,
             "score": score,
             "candidate": {k: v for k, v in candidate.items() if k != "ahash"},
             "kept_total": kept_total,
+            "effective_kept_total": max(kept_total, 1 if state.get("fallback_top_frame") else 0),
             "avg_latency_ms": avg_latency_ms,
             "guidance": guidance_text,
             "should_stop": should_stop,
@@ -1479,8 +1575,16 @@ async def api_session_finalize(session_id: str = Form(...), enough_moment: str =
     state = STORE.get_or_create(session_id)
     if not state.get("stage1"):
         raise HTTPException(status_code=400, detail="Run stage 1 first")
-    if not state.get("best_frames"):
-        raise HTTPException(status_code=400, detail="No selected frames yet")
+
+    export_frames = rebalance_frame_pool(list(state.get("best_frames") or []))[:EXPORT_BEST_COUNT]
+    used_fallback_frame = False
+    if not export_frames:
+        fallback = state.get("fallback_top_frame")
+        if fallback:
+            export_frames = [fallback]
+            used_fallback_frame = True
+        else:
+            raise HTTPException(status_code=400, detail="No frames captured yet")
 
     state["story_seed"] = build_story_seed(state)
     basket_assets: List[Dict[str, Any]] = []
@@ -1488,24 +1592,52 @@ async def api_session_finalize(session_id: str = Form(...), enough_moment: str =
     export_root = export_dir(session_id)
     input_media_dir = ensure_dir(export_root / "input_media")
     summary_path = export_root / "session_summary.json"
+    story_seed_path = export_root / "story_seed.json"
+    shot_manifest_path = export_root / "shot_manifest.json"
+    idea_path = export_root / "idea.txt"
+    shot_manifest: List[Dict[str, Any]] = []
 
-    for rank, frame in enumerate(sorted(state["best_frames"], key=lambda item: int(item.get("score_0_to_100", 0)), reverse=True), start=1):
+    stage1_path = Path(state["stage1"]["local_path"])
+    hero_rel_path: Optional[str] = None
+    if stage1_path.exists():
+        hero_rel_path = "input_media/hero.jpg"
+        hero_copy = input_media_dir / "hero.jpg"
+        hero_bytes = stage1_path.read_bytes()
+        hero_copy.write_bytes(hero_bytes)
+        hero_upload = STORAGE.store_bytes(
+            prefix=basket_prefix,
+            filename="hero.jpg",
+            data=hero_bytes,
+            width=int(state["stage1"].get("width", 0)),
+            height=int(state["stage1"].get("height", 0)),
+            metadata={
+                "session_id": session_id,
+                "capture_type": "hero",
+                "created_at": utc_iso(),
+            },
+        )
+        basket_assets.append(hero_upload.__dict__)
+
+    for rank, frame in enumerate(export_frames, start=1):
         local_path = Path(frame["local_path"])
         if not local_path.exists():
             continue
-        target_name = f"best_{rank:02d}_{local_path.name}"
+        target_name = f"best_{rank:02d}.jpg"
         copied = input_media_dir / target_name
-        copied.write_bytes(local_path.read_bytes())
+        frame_bytes = local_path.read_bytes()
+        copied.write_bytes(frame_bytes)
         upload = STORAGE.store_bytes(
             prefix=basket_prefix,
             filename=target_name,
-            data=local_path.read_bytes(),
+            data=frame_bytes,
             width=int(frame.get("width", 0)),
             height=int(frame.get("height", 0)),
             metadata={
                 "session_id": session_id,
                 "capture_type": "best_frame",
                 "moment_label": str(frame.get("moment_label", "")),
+                "cinematic_role": str(frame.get("cinematic_role", "")),
+                "best_future_use": str(frame.get("best_future_use", "")),
                 "score": str(frame.get("score_0_to_100", 0)),
                 "created_at": utc_iso(),
             },
@@ -1513,19 +1645,49 @@ async def api_session_finalize(session_id: str = Form(...), enough_moment: str =
         frame["preview_url"] = upload.view_url
         frame["basket_upload"] = upload.__dict__
         basket_assets.append(upload.__dict__)
+        shot_manifest.append(
+            {
+                "rank": rank,
+                "file_name": target_name,
+                "local_path": str(copied),
+                "moment_label": frame.get("moment_label"),
+                "cinematic_role": frame.get("cinematic_role"),
+                "best_future_use": frame.get("best_future_use"),
+                "score_0_to_100": frame.get("score_0_to_100"),
+                "preview_url": upload.view_url,
+            }
+        )
 
-    stage1_path = Path(state["stage1"]["local_path"])
-    if stage1_path.exists():
-        hero_copy = input_media_dir / f"hero_{stage1_path.name}"
-        hero_copy.write_bytes(stage1_path.read_bytes())
+    story_seed = {
+        **(state.get("story_seed") or {}),
+        "hero_image": hero_rel_path,
+        "selected_frames": [f"input_media/{shot['file_name']}" for shot in shot_manifest],
+        "selected_roles": [shot.get("cinematic_role") for shot in shot_manifest],
+    }
+    safe_json_dump(story_seed_path, story_seed)
+    safe_json_dump(
+        shot_manifest_path,
+        {
+            "session_id": session_id,
+            "hero_image": hero_rel_path,
+            "shots": shot_manifest,
+            "created_at": utc_iso(),
+        },
+    )
+    idea_path.write_text(build_idea_text(story_seed, export_frames), encoding="utf-8")
 
     summary = {
         "session_id": session_id,
         "enough_moment": enough_moment,
         "stage1": state["stage1"],
         "stage1_upload": state.get("stage1_upload"),
-        "best_frames": [{k: v for k, v in frame.items() if k != "ahash"} for frame in state["best_frames"]],
+        "story_seed": story_seed,
+        "best_frames": [{k: v for k, v in frame.items() if k != "ahash"} for frame in export_frames],
         "basket_assets": basket_assets,
+        "shot_manifest_path": str(shot_manifest_path),
+        "story_seed_path": str(story_seed_path),
+        "idea_path": str(idea_path),
+        "used_fallback_frame": used_fallback_frame,
         "finalized_at": utc_iso(),
         "storage_mode": STORAGE.mode,
     }
@@ -1561,11 +1723,18 @@ async def api_session_finalize(session_id: str = Form(...), enough_moment: str =
 
     state["finalized"] = {
         "summary_path": str(summary_path),
+        "story_seed_path": str(story_seed_path),
+        "shot_manifest_path": str(shot_manifest_path),
+        "idea_path": str(idea_path),
         "basket_assets": basket_assets,
         "pipeline_result": pipeline_result,
         "input_media_dir": str(input_media_dir),
         "export_root": str(export_root),
         "enough_moment": enough_moment,
+        "selected_count": len(shot_manifest),
+        "selected_roles": [shot.get("cinematic_role") for shot in shot_manifest],
+        "story_seed": story_seed,
+        "used_fallback_frame": used_fallback_frame,
         "finalized_at": utc_iso(),
     }
     STORE.persist(session_id)
@@ -1580,5 +1749,3 @@ async def api_session_finalize(session_id: str = Form(...), enough_moment: str =
         "session_id": session_id,
         "finalized": state["finalized"],
     }
-
-

@@ -836,21 +836,23 @@ export default function App() {
       const nextFramesSeen = nextFrameIndex
       const nextScore = Number(data.score || data.analysis?.score_0_to_100 || 0)
       const nextKept = Number(data.kept_total || 0)
+      const effectiveKept = Number(data.effective_kept_total || nextKept)
       const selected = Boolean(data.selected)
+      const fallbackSelected = Boolean(data.fallback_selected)
       const nextRole = normalizeRole(data.candidate?.cinematic_role || data.analysis?.cinematic_role)
       const nextGuide = String(data.guidance || publicGuideFor(nextScore, selected, nextKept, nextRole)).trim()
       const previousBest = scoreRef.current
 
       framesSeenRef.current = nextFramesSeen
       scoreRef.current = nextScore
-      keptCountRef.current = nextKept
+      keptCountRef.current = effectiveKept
       consecutiveErrorsRef.current = 0
       setFramesSeen(nextFramesSeen)
       setScore(nextScore)
-      setKeptCount(nextKept)
+      setKeptCount(effectiveKept)
       setLatencyAvg(Number(data.avg_latency_ms || 0))
       setGuide(nextGuide)
-      setStatus(selected ? 'Strong moment saved.' : 'Scanning for the next strong frame.')
+      setStatus(selected ? 'Strong moment saved.' : (fallbackSelected ? 'Best attempt updated.' : 'Scanning for the next strong frame.'))
       setConsecutiveErrors(0)
 
       updateDebug({
@@ -863,12 +865,13 @@ export default function App() {
         frameIndex: nextFrameIndex,
         score: nextScore,
         selected,
+        fallbackSelected,
         role: nextRole,
         latencyMs,
         rawGuidance: data.guidance || '',
       })
 
-      if (selected && data.candidate) {
+      if ((selected || fallbackSelected) && data.candidate) {
         setBestFrames((prev) => {
           const next = [data.candidate, ...prev.filter((item) => item.local_path !== data.candidate.local_path)]
           return next.slice(0, 8)
@@ -884,10 +887,18 @@ export default function App() {
 
       const shouldAutoStop =
         Boolean(data.should_stop) ||
-        ((nextKept >= AUTO_STOP_TARGET_KEPT && nextFramesSeen >= 5) || nextFramesSeen >= AUTO_STOP_AFTER_FRAMES)
+        ((effectiveKept >= AUTO_STOP_TARGET_KEPT && nextFramesSeen >= 5) || nextFramesSeen >= AUTO_STOP_AFTER_FRAMES)
 
       if (shouldAutoStop) {
-        enterReview(data.stop_reason || (nextKept >= AUTO_STOP_TARGET_KEPT ? 'Collection ready.' : 'Good enough for demo.'))
+        const usedFallbackOnly = nextKept === 0 && nextScore > 0
+        enterReview(
+          data.stop_reason ||
+          (nextKept >= AUTO_STOP_TARGET_KEPT
+            ? 'Collection ready.'
+            : usedFallbackOnly
+              ? 'Best attempt saved. Review the top frame.'
+              : 'No usable frame yet. Try another pass.')
+        )
         return
       }
     } catch (err) {
@@ -961,7 +972,7 @@ export default function App() {
     setPhase('review')
     setMode('review')
     setStatus(message)
-    setGuide('Collection ready. Review the three best story inputs.')
+    setGuide('Collection ready. Review the best story inputs.')
     updateDebug({ phase: 'review' })
     pushEvent('enter_review', { message })
   }
@@ -983,7 +994,10 @@ export default function App() {
       }
 
       setFinalizeInfo(mergedFinalize)
-      setBestFrames((state.best_frames || []).slice(0, 3))
+      const finalizedFrames = (state.best_frames && state.best_frames.length)
+        ? state.best_frames.slice(0, 3)
+        : (state.fallback_top_frame ? [state.fallback_top_frame] : [])
+      setBestFrames(finalizedFrames)
       pushEvent('finalized', {
         basketAssets: finalized.finalized?.basket_assets?.length || 0,
         selectedCount: finalized.finalized?.selected_count || 0,
