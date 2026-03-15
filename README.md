@@ -57,6 +57,16 @@ We use Vertex AI + Cloud TTS with ADC:
 gcloud auth application-default login
 ```
 
+6. **Deploy infra and apps**
+
+```bash
+scripts/deploy_infra.sh
+```
+
+```bash
+scripts/deploy_backend_cloud_run.sh
+scripts/deploy_video_job.sh
+```
 
 ## Technologies used
 

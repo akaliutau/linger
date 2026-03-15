@@ -14,7 +14,9 @@ gcloud config set project $PROJECT_ID
 
 echo "Enabling APIs..."
 gcloud services enable aiplatform.googleapis.com compute.googleapis.com logging.googleapis.com cloudquotas.googleapis.com \
-       cloudresourcemanager.googleapis.com iam.googleapis.com texttospeech.googleapis.com
+       cloudresourcemanager.googleapis.com iam.googleapis.com texttospeech.googleapis.com cloudbuild.googleapis.com \
+       artifactregistry.googleapis.com \
+       run.googleapis.com
 
 
 # ==========================================
