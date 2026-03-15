@@ -2,14 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import json
 import os
 import re
-import hashlib
-import shlex
-import subprocess
-import sys
 import time
 import uuid
 from dataclasses import dataclass
@@ -20,10 +17,11 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 import dotenv
 import google.auth
 from fastapi import FastAPI, File, Form, HTTPException, Request, WebSocket, WebSocketDisconnect, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from google.auth.transport.requests import AuthorizedSession
 from starlette.concurrency import run_in_threadpool
+
 try:
     from google import genai
     from google.genai import types
@@ -1186,13 +1184,21 @@ def render_object_name(session_id: str, filename: str) -> str:
 
 
 def upload_placeholder_video(session_id: str) -> Dict[str, Any]:
-    placeholder_path = Path(PLACEHOLDER_VIDEO_FILE)
-    if not placeholder_path.is_absolute():
-        placeholder_path = (BASE_DIR / placeholder_path).resolve()
-    if not placeholder_path.exists():
-        raise RuntimeError(f"Placeholder video file not found: {placeholder_path}")
+    raw_path = PLACEHOLDER_VIDEO_FILE or "static/generating_reel.mp4"
+    placeholder_path = Path(raw_path)
 
-    payload = placeholder_path.read_bytes()
+    candidates = []
+    if placeholder_path.is_absolute():
+        candidates.append(placeholder_path)
+    else:
+        candidates.append((BASE_DIR / placeholder_path).resolve())
+        candidates.append((Path.cwd() / placeholder_path).resolve())
+
+    chosen = next((p for p in candidates if p.exists()), None)
+    if chosen is None:
+        raise RuntimeError(f"Placeholder video file not found: {candidates[0]}")
+
+    payload = chosen.read_bytes()
     asset = STORAGE.store_bytes(
         prefix=reels_prefix(session_id),
         filename="placeholder.mp4",
@@ -1971,10 +1977,9 @@ async def api_story_video(session_id: str):
     blob = STORAGE.bucket.blob(object_name)
     if not blob.exists():
         raise HTTPException(status_code=404, detail="Story video not found")
-    signed_url = blob.generate_signed_url(
-        version="v4",
-        expiration=timedelta(minutes=SIGNED_URL_EXPIRY_MIN),
-        method="GET",
-        response_disposition="inline",
+
+    return Response(
+        content=blob.download_as_bytes(),
+        media_type="video/mp4",
+        headers={"Cache-Control": "no-store"},
     )
-    return RedirectResponse(url=signed_url, status_code=307, headers={"Cache-Control": "no-store"})

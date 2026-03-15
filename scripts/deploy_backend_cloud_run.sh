@@ -28,7 +28,7 @@ trap cleanup EXIT
 
 mkdir -p "${BUILD_DIR}/fe"
 cp "${ROOT_DIR}/app.py" "${BUILD_DIR}/"
-cp "${ROOT_DIR}/static/generating_reel.mp4" "${BUILD_DIR}/static/"
+cp "${ROOT_DIR}/static/generating_reel.mp4" "${BUILD_DIR}/"
 cp "${ROOT_DIR}/fe/package.json" "${BUILD_DIR}/fe/"
 if [[ -f "${ROOT_DIR}/fe/package-lock.json" ]]; then
   cp "${ROOT_DIR}/fe/package-lock.json" "${BUILD_DIR}/fe/"
