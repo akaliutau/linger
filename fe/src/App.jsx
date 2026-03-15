@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-const APP_TITLE = 'Linger Story Camera'
+const APP_TITLE = 'Linger Story'
 const HERO_TIMEOUT_MS = 25000
 const FRAME_TIMEOUT_MS = 18000
 const FINALIZE_TIMEOUT_MS = 45000
@@ -8,11 +8,6 @@ const FRAME_INTERVAL_MS = 1000
 const AUTO_STOP_AFTER_FRAMES = 12
 const AUTO_STOP_TARGET_KEPT = 3
 const MAX_CONSECUTIVE_ERRORS = 3
-const HERO_CAPTURE_MAX_WIDTH = 1400
-const HERO_CAPTURE_QUALITY = 0.9
-const HARVEST_CAPTURE_MAX_WIDTH = 960
-const HARVEST_CAPTURE_QUALITY = 0.74
-const HERO_ANIMATION_MS = 760
 
 const initialDebug = {
   phase: 'intro',
@@ -182,725 +177,696 @@ function summarizeTrack(track) {
 }
 
 
-function triggerHaptic(pattern = 12) {
-  try {
-    navigator?.vibrate?.(pattern)
-  } catch {}
-}
-
-function upsertMeta(selector, attrs) {
-  if (typeof document === 'undefined') return null
-  let node = document.head.querySelector(selector)
-  if (!node) {
-    node = document.createElement('meta')
-    document.head.appendChild(node)
-  }
-  Object.entries(attrs).forEach(([key, value]) => {
-    if (value != null) node.setAttribute(key, String(value))
-  })
-  return node
-}
-
-function configureAppChrome() {
-  if (typeof document === 'undefined') return
-  document.documentElement.style.height = '100%'
-  document.body.style.height = '100%'
-  document.body.style.margin = '0'
-  document.body.style.background = '#05070b'
-  document.body.style.overscrollBehavior = 'none'
-  document.body.style.webkitTapHighlightColor = 'transparent'
-  upsertMeta('meta[name="viewport"]', {
-    name: 'viewport',
-    content: 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover',
-  })
-  upsertMeta('meta[name="theme-color"]', { name: 'theme-color', content: '#05070b' })
-  upsertMeta('meta[name="apple-mobile-web-app-capable"]', { name: 'apple-mobile-web-app-capable', content: 'yes' })
-  upsertMeta('meta[name="mobile-web-app-capable"]', { name: 'mobile-web-app-capable', content: 'yes' })
-}
-
-async function requestAppFullscreen() {
-  const el = document.documentElement
-  if (!el || document.fullscreenElement || !el.requestFullscreen) return false
-  try {
-    await el.requestFullscreen({ navigationUI: 'hide' })
-    return true
-  } catch {
-    try {
-      await el.requestFullscreen()
-      return true
-    } catch {
-      return false
-    }
+function getSystemViewport() {
+  const vv = window.visualViewport
+  const cssWidth = Math.max(
+    1,
+    Math.round(vv?.width || window.innerWidth || document.documentElement?.clientWidth || window.screen?.width || 360),
+  )
+  const cssHeight = Math.max(
+    1,
+    Math.round(vv?.height || window.innerHeight || document.documentElement?.clientHeight || window.screen?.height || 640),
+  )
+  const dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 2.2))
+  return {
+    cssWidth,
+    cssHeight,
+    dpr,
+    streamWidth: Math.max(720, Math.round(cssWidth * dpr)),
+    streamHeight: Math.max(1280, Math.round(cssHeight * dpr)),
+    aspectRatio: cssWidth / cssHeight,
   }
 }
 
-function AppChromeStyles() {
+function applyViewportVars(metrics = getSystemViewport()) {
+  if (typeof document !== 'undefined') {
+    document.documentElement.style.setProperty('--app-vw', `${metrics.cssWidth}px`)
+    document.documentElement.style.setProperty('--app-vh', `${metrics.cssHeight}px`)
+  }
+  return metrics
+}
+
+function buildCameraRequest(sourceMetrics) {
+  const metrics = applyViewportVars(sourceMetrics || getSystemViewport())
+  return {
+    metrics,
+    constraints: {
+      video: {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: metrics.streamWidth },
+        height: { ideal: metrics.streamHeight },
+        aspectRatio: { ideal: metrics.aspectRatio },
+      },
+      audio: false,
+    },
+  }
+}
+
+function LayoutFixStyles() {
   return (
-    <style>{`      html, body, #root {
-        margin: 0;
-        min-height: 100%;
-        height: 100%;
-        width: 100%;
-        background: #05070b;
-        color: #ffffff;
-        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    <style>{`
+      :root {
+        --app-vw: 100vw;
+        --app-vh: 100dvh;
       }
+
       * {
         box-sizing: border-box;
       }
+
+      html,
+      body,
+      #root {
+        margin: 0;
+        width: 100%;
+        min-height: 100%;
+        background: #05070b;
+        color: #f5f7fb;
+        overflow-x: hidden;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
       body {
         overscroll-behavior-y: contain;
       }
+
       button,
       input,
       textarea,
       select {
         font: inherit;
       }
+
+      button {
+        cursor: pointer;
+      }
+
       a {
         color: inherit;
       }
+
       .app-shell {
         position: relative;
-        min-height: 100dvh;
         width: 100%;
+        min-height: var(--app-vh);
         background: #05070b;
-        overflow-x: hidden;
+        color: #f5f7fb;
       }
+
       .screen {
-        width: 100%;
-        min-height: 100dvh;
-      }
-      .camera-screen,
-      .wait-screen {
         position: relative;
-        min-height: 100dvh;
-        height: 100dvh;
-        overflow: hidden;
-        background: #05070b;
+        width: 100%;
+        min-height: var(--app-vh);
       }
+
       .intro-screen,
       .review-screen {
-        position: relative;
-        min-height: 100dvh;
+        min-height: var(--app-vh);
+        padding: 24px 16px calc(env(safe-area-inset-bottom, 0px) + 28px);
         overflow-x: hidden;
         overflow-y: auto;
         -webkit-overflow-scrolling: touch;
-        background: #05070b;
       }
-      .camera-video {
-        position: absolute;
-        inset: 0;
-        width: 100%;
-        height: 100%;
-        object-fit: contain;
-        object-position: center center;
-        transform: translateZ(0);
-        backface-visibility: hidden;
-        background: #05070b;
-      }
-      .camera-overlay {
-        position: absolute;
-        inset: 0;
-        pointer-events: none;
-      }
-      .top-gradient {
-        background: linear-gradient(180deg, rgba(5,7,11,0.72) 0%, rgba(5,7,11,0.18) 22%, rgba(5,7,11,0) 42%);
-      }
-      .bottom-gradient {
-        background: linear-gradient(180deg, rgba(5,7,11,0) 50%, rgba(5,7,11,0.18) 72%, rgba(5,7,11,0.88) 100%);
-      }
-      .hero-thumb-wrap {
-        position: absolute;
-        top: calc(env(safe-area-inset-top, 0px) + 18px);
-        right: 18px;
-        z-index: 7;
-      }
-      .hero-thumb {
-        width: 88px;
-        height: 118px;
-        border-radius: 22px;
-        object-fit: cover;
-        box-shadow: 0 18px 48px rgba(0, 0, 0, 0.36);
-        border: 1px solid rgba(255, 255, 255, 0.16);
-        background: rgba(255, 255, 255, 0.06);
-      }
-      .hero-thumb.placeholder {
-        background: rgba(255, 255, 255, 0.08);
-        backdrop-filter: blur(12px);
-      }
-      .hero-thumb.pending {
-        opacity: 0.2;
-      }
-      .phase-chip {
-        position: absolute;
-        left: 18px;
-        top: calc(env(safe-area-inset-top, 0px) + 18px);
-        z-index: 7;
-        padding: 10px 14px;
-        border-radius: 999px;
-        font-size: 12px;
-        font-weight: 700;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-        color: rgba(255,255,255,0.94);
-        background: rgba(15, 19, 28, 0.68);
-        border: 1px solid rgba(255,255,255,0.08);
-        backdrop-filter: blur(14px);
-      }
-      .hud.top {
-        position: absolute;
-        left: 16px;
-        right: 16px;
-        top: calc(env(safe-area-inset-top, 0px) + 68px);
-        z-index: 7;
-        display: grid;
-        gap: 10px;
-        padding-right: 102px;
-      }
-      .score-pill,
-      .guide-pill,
-      .mini-stat {
-        backdrop-filter: blur(14px);
-        background: rgba(15, 19, 28, 0.68);
-        border: 1px solid rgba(255,255,255,0.08);
-        box-shadow: 0 12px 32px rgba(0,0,0,0.18);
-      }
-      .score-pill {
-        display: inline-flex;
-        align-items: baseline;
-        gap: 10px;
-        width: fit-content;
-        padding: 10px 14px;
-        border-radius: 16px;
-      }
-      .score-pill strong {
-        font-size: 24px;
-        line-height: 1;
-      }
-      .score-pill.low strong { color: #ffc3c3; }
-      .score-pill.mid strong { color: #ffe69f; }
-      .score-pill.good strong { color: #bbf7d0; }
-      .score-pill.excellent strong { color: #93c5fd; }
-      .score-label {
-        font-size: 11px;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: rgba(255,255,255,0.6);
-      }
-      .hud-cluster {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-      }
-      .mini-stat {
-        min-width: 72px;
-        padding: 8px 10px;
-        border-radius: 14px;
-      }
-      .mini-stat span {
-        display: block;
-        font-size: 10px;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: rgba(255,255,255,0.56);
-        margin-bottom: 4px;
-      }
-      .mini-stat strong {
-        display: block;
-        font-size: 15px;
-        line-height: 1.1;
-      }
-      .guide-pill {
-        display: inline-block;
-        max-width: min(100%, 420px);
-        padding: 11px 14px;
-        border-radius: 16px;
-        color: rgba(255,255,255,0.86);
-        line-height: 1.35;
-      }
-      .status-strip {
-        position: absolute;
-        left: 16px;
-        right: 16px;
-        bottom: max(calc(env(safe-area-inset-bottom, 0px) + 128px), 128px);
-        z-index: 7;
-        padding: 12px 14px;
-        border-radius: 18px;
-        color: rgba(255,255,255,0.92);
-        background: rgba(12, 16, 24, 0.78);
-        border: 1px solid rgba(255,255,255,0.08);
-        box-shadow: 0 18px 44px rgba(0,0,0,0.22);
-        backdrop-filter: blur(14px);
-        line-height: 1.35;
-      }
-      .camera-controls {
-        position: absolute;
-        left: 18px;
-        right: 18px;
-        bottom: max(calc(env(safe-area-inset-bottom, 0px) + 30px), 30px);
-        z-index: 8;
-        display: flex;
-        align-items: flex-end;
-        justify-content: space-between;
-        gap: 16px;
-      }
-      .camera-controls .ghost-button,
-      .camera-controls .capture-button {
-        touch-action: manipulation;
-      }
-      .ghost-button,
-      .secondary-button {
-        min-height: 52px;
-        border-radius: 999px;
-        padding: 0 18px;
-        border: 1px solid rgba(255,255,255,0.12);
-        background: rgba(255,255,255,0.08);
-        color: #ffffff;
-        font-weight: 600;
-        backdrop-filter: blur(14px);
-      }
-      .ghost-spacer {
-        width: 92px;
-        flex: 0 0 92px;
-      }
-      .capture-button {
-        position: relative;
-        width: 92px;
-        height: 92px;
-        flex: 0 0 92px;
-        border: 0;
-        border-radius: 999px;
-        background: rgba(255,255,255,0.08);
-        color: #ffffff;
-        box-shadow: 0 18px 44px rgba(0,0,0,0.28);
-        transform: translateZ(0);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 0;
-      }
-      .capture-button.busy {
-        opacity: 0.82;
-      }
-      .capture-ring {
-        position: absolute;
-        inset: 10px;
-        border-radius: 999px;
-        border: 4px solid rgba(255,255,255,0.96);
-        box-shadow: inset 0 0 0 1px rgba(0,0,0,0.08);
-      }
-      .capture-text {
-        position: relative;
-        z-index: 1;
-        max-width: 70px;
-        text-align: center;
-        font-size: 11px;
-        line-height: 1.15;
-        font-weight: 700;
-        letter-spacing: 0.06em;
-        text-transform: uppercase;
-      }
-      .primary-button {
-        min-height: 56px;
-        border-radius: 18px;
-        padding: 0 20px;
-        border: 0;
-        background: linear-gradient(180deg, #ffffff 0%, #dfe6f3 100%);
-        color: #0d1117;
-        font-weight: 700;
-        box-shadow: 0 14px 36px rgba(0,0,0,0.2);
-      }
-      .primary-button.xl {
-        width: 100%;
-        min-height: 60px;
-        font-size: 17px;
-      }
-      .primary-button:disabled,
-      .secondary-button:disabled,
-      .ghost-button:disabled,
-      .capture-button:disabled {
-        opacity: 0.66;
-      }
-      .hero-capture-fx {
-        position: absolute;
-        inset: 0;
-        z-index: 9;
-        pointer-events: none;
-      }
-      .hero-capture-box {
-        position: absolute;
-        left: 50%;
-        top: 50%;
-        width: min(56vw, 280px);
-        aspect-ratio: 3 / 4;
-        transform: translate(-50%, -50%);
-        border-radius: 28px;
-        border: 2px solid rgba(255, 255, 255, 0.92);
-        box-shadow: 0 0 0 999px rgba(6, 9, 14, 0.08), 0 16px 50px rgba(0, 0, 0, 0.22);
-        animation: heroBoxShrink ${HERO_ANIMATION_MS}ms cubic-bezier(.2,.85,.22,1) forwards;
-      }
-      .hero-capture-fly-thumb {
-        position: absolute;
-        top: calc(env(safe-area-inset-top, 0px) + 18px);
-        right: 18px;
-        width: 88px;
-        height: 118px;
-        border-radius: 22px;
-        object-fit: cover;
-        border: 1px solid rgba(255, 255, 255, 0.18);
-        box-shadow: 0 18px 48px rgba(0, 0, 0, 0.36);
-        opacity: 0;
-        transform: scale(0.72);
-        animation: heroThumbReveal ${HERO_ANIMATION_MS}ms ease forwards;
-      }
-      .wait-shell {
-        min-height: 100dvh;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: calc(env(safe-area-inset-top, 0px) + 28px) 20px calc(env(safe-area-inset-bottom, 0px) + 28px);
-      }
-      .wait-card,
-      .intro-card,
-      .review-card {
-        background: linear-gradient(180deg, rgba(25,30,40,0.96), rgba(13,16,22,0.98));
-        border: 1px solid rgba(255,255,255,0.08);
-        box-shadow: 0 24px 90px rgba(0,0,0,0.38);
-        color: white;
-      }
-      .wait-card {
-        width: min(100%, 560px);
-        padding: 28px 22px;
-        border-radius: 28px;
-      }
-      .wait-card h2 {
-        margin: 0 0 10px;
-        font-size: 30px;
-        line-height: 1.04;
-      }
-      .wait-card p {
-        margin: 0;
-        color: rgba(255,255,255,0.78);
-        line-height: 1.5;
-      }
-      .wait-spinner {
-        width: 48px;
-        height: 48px;
-        border-radius: 999px;
-        border: 4px solid rgba(255,255,255,0.12);
-        border-top-color: rgba(255,255,255,0.95);
-        animation: spin 0.9s linear infinite;
-        margin-bottom: 18px;
-      }
-      .wait-link-block,
-      .pipeline-box,
-      .idea-box {
-        margin-top: 18px;
-        padding: 14px;
-        border-radius: 18px;
-        background: rgba(255,255,255,0.05);
-        border: 1px solid rgba(255,255,255,0.08);
-      }
-      .wait-link-label,
-      .idea-label,
-      .eyebrow,
-      .intro-meta {
-        display: block;
-        font-size: 12px;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: rgba(255,255,255,0.56);
-      }
-      .wait-link,
-      .wait-link-raw {
-        color: #cce0ff;
-        word-break: break-word;
-      }
-      .wait-link-raw {
-        font-size: 13px;
-        margin-top: 8px;
-      }
-      .wait-dots {
-        display: inline-flex;
-        gap: 8px;
-        margin-top: 20px;
-      }
-      .wait-dots span {
-        width: 8px;
-        height: 8px;
-        border-radius: 999px;
-        background: rgba(255,255,255,0.8);
-        animation: waitDot 1.1s ease-in-out infinite;
-      }
-      .wait-dots span:nth-child(2) { animation-delay: 120ms; }
-      .wait-dots span:nth-child(3) { animation-delay: 240ms; }
+
       .intro-screen {
         display: flex;
         align-items: center;
         justify-content: center;
-        padding: calc(env(safe-area-inset-top, 0px) + 24px) 18px calc(env(safe-area-inset-bottom, 0px) + 24px);
       }
+
       .intro-glow {
         position: absolute;
         inset: 0;
         background:
-          radial-gradient(circle at 20% 20%, rgba(84, 105, 212, 0.22), transparent 36%),
-          radial-gradient(circle at 78% 30%, rgba(16, 185, 129, 0.14), transparent 28%),
-          radial-gradient(circle at 50% 100%, rgba(255, 255, 255, 0.06), transparent 30%);
+          radial-gradient(circle at 50% 18%, rgba(96, 119, 255, 0.18), transparent 34%),
+          radial-gradient(circle at 50% 80%, rgba(88, 255, 177, 0.09), transparent 30%);
         pointer-events: none;
       }
-      .intro-card {
+
+      .intro-card,
+      .review-card,
+      .idea-box,
+      .best-pill,
+      .pipeline-box,
+      .ghost-button,
+      .capture-button,
+      .score-pill,
+      .mini-stat,
+      .guide-pill,
+      .phase-chip,
+      .status-strip {
+        background: rgba(26, 30, 38, 0.82);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+        backdrop-filter: blur(14px);
+        -webkit-backdrop-filter: blur(14px);
+      }
+
+      .intro-card,
+      .review-card {
         position: relative;
-        z-index: 1;
-        width: min(100%, 520px);
-        padding: 28px 22px;
+        width: min(720px, 100%);
+        margin: 0 auto;
+        padding: 24px;
         border-radius: 28px;
       }
-      .intro-card h1 {
+
+      .eyebrow {
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+        opacity: 0.72;
+      }
+
+      .intro-card h1,
+      .review-card h2 {
         margin: 10px 0 12px;
-        font-size: clamp(32px, 7vw, 52px);
-        line-height: 0.96;
-        letter-spacing: -0.04em;
+        font-size: clamp(30px, 6vw, 46px);
+        line-height: 1.04;
       }
+
       .intro-card p,
       .muted,
-      .pipeline-box span,
-      .best-pill span,
-      .best-pill small {
-        color: rgba(255,255,255,0.74);
-      }
-      .intro-card p,
-      .muted,
-      .pipeline-box span,
-      .best-pill span,
-      .best-pill small,
       .idea-box p {
+        margin: 0;
+        color: rgba(245, 247, 251, 0.82);
         line-height: 1.5;
       }
+
       .intro-meta {
-        margin-top: 14px;
+        margin-top: 16px;
+        font-size: 13px;
+        opacity: 0.64;
       }
-      .review-shell {
-        width: 100%;
-        padding: calc(env(safe-area-inset-top, 0px) + 18px) 16px calc(env(safe-area-inset-bottom, 0px) + 28px);
+
+      .primary-button,
+      .secondary-button {
+        appearance: none;
+        border: 0;
+        border-radius: 999px;
+        padding: 14px 22px;
+        font-weight: 700;
+        color: #f8fbff;
       }
-      .review-card {
-        width: min(100%, 720px);
-        margin: 0 auto;
-        padding: 18px;
-        border-radius: 28px;
+
+      .primary-button {
+        background: linear-gradient(180deg, #6ea3ff 0%, #4f84eb 100%);
       }
-      .review-header {
-        display: grid;
-        grid-template-columns: 104px minmax(0, 1fr);
-        gap: 16px;
-        align-items: start;
+
+      .secondary-button {
+        background: rgba(255, 255, 255, 0.1);
       }
-      .review-hero {
-        width: 104px;
-        height: 136px;
-        border-radius: 18px;
-        object-fit: cover;
-        background: rgba(255,255,255,0.08);
+
+      .primary-button.xl {
+        margin-top: 20px;
+        padding: 16px 24px;
+        font-size: 16px;
       }
-      .review-header h2 {
-        margin: 10px 0 8px;
-        font-size: clamp(24px, 5.6vw, 36px);
-        line-height: 1;
-        letter-spacing: -0.03em;
+
+      .camera-screen,
+      .wait-screen {
+        position: fixed !important;
+        inset: 0 !important;
+        width: 100vw !important;
+        height: var(--app-vh) !important;
+        min-height: var(--app-vh) !important;
+        overflow: hidden !important;
+        background: #05070b !important;
       }
-      .idea-box p {
-        margin: 8px 0 0;
+
+      .camera-stage {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        background: #05070b;
+        contain: layout paint size;
       }
-      .best-strip {
-        display: grid;
-        gap: 12px;
-        margin-top: 18px;
+
+      .camera-video {
+        position: absolute !important;
+        inset: 0 !important;
+        width: 100% !important;
+        height: 100% !important;
+        min-width: 100% !important;
+        min-height: 100% !important;
+        object-fit: cover !important;
+        object-position: center center !important;
+        background: #05070b !important;
+        transform: translateZ(0) !important;
+        backface-visibility: hidden;
+        -webkit-transform: translateZ(0) !important;
+        -webkit-backface-visibility: hidden;
       }
-      .best-pill {
-        display: grid;
-        grid-template-columns: 92px minmax(0, 1fr);
-        gap: 12px;
-        align-items: start;
-        padding: 10px;
-        border-radius: 18px;
-        background: rgba(255,255,255,0.04);
-        border: 1px solid rgba(255,255,255,0.07);
+
+      .camera-overlay {
+        position: absolute;
+        left: 0;
+        right: 0;
+        z-index: 1;
+        pointer-events: none;
       }
-      .best-pill img {
-        width: 92px;
-        height: 92px;
-        border-radius: 14px;
-        object-fit: cover;
-        background: rgba(255,255,255,0.08);
+
+      .top-gradient {
+        top: 0;
+        height: 156px;
+        background: linear-gradient(180deg, rgba(5, 7, 11, 0.58) 0%, rgba(5, 7, 11, 0.18) 58%, rgba(5, 7, 11, 0) 100%);
       }
-      .best-pill strong,
-      .pipeline-box strong {
-        display: block;
-        margin-bottom: 4px;
+
+      .bottom-gradient {
+        bottom: 0;
+        height: 240px;
+        background: linear-gradient(0deg, rgba(5, 7, 11, 0.64) 0%, rgba(5, 7, 11, 0.22) 42%, rgba(5, 7, 11, 0) 100%);
       }
-      .best-pill span,
-      .best-pill small,
-      .pipeline-box span {
-        display: block;
-      }
-      .pipeline-box a {
-        color: #cce0ff;
-        font-weight: 600;
-      }
-      .review-actions {
+
+      .hud.top {
+        position: absolute;
+        top: 66px;
+        left: 14px;
+        right: 14px;
+        z-index: 3;
         display: flex;
         flex-wrap: wrap;
+        gap: 8px;
+        align-items: flex-start;
+      }
+
+      .score-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 108px;
+        padding: 12px 14px;
+        border-radius: 18px;
+      }
+
+      .score-label,
+      .mini-stat span {
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        opacity: 0.72;
+      }
+
+      .score-pill strong,
+      .mini-stat strong {
+        font-size: 16px;
+      }
+
+      .hud-cluster {
+        display: inline-flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .mini-stat {
+        display: inline-flex;
+        align-items: baseline;
+        gap: 8px;
+        padding: 10px 12px;
+        border-radius: 16px;
+      }
+
+      .guide-pill {
+        flex: 1 1 220px;
+        min-width: min(100%, 260px);
+        padding: 14px 16px;
+        border-radius: 20px;
+        font-size: 15px;
+        line-height: 1.32;
+      }
+
+      .phase-chip {
+        position: absolute;
+        top: 14px;
+        left: 14px;
+        z-index: 4;
+        padding: 12px 18px;
+        border-radius: 18px;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .hero-thumb-wrap {
+        position: absolute;
+        top: 66px;
+        right: 14px;
+        z-index: 4;
+        width: 78px;
+        height: 106px;
+        border-radius: 20px;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(18, 20, 24, 0.72);
+        box-shadow: 0 12px 28px rgba(0, 0, 0, 0.22);
+      }
+
+      .hero-thumb,
+      .hero-thumb.placeholder {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+
+      .hero-thumb.placeholder {
+        background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02));
+      }
+
+      .status-strip {
+        position: absolute;
+        left: 14px;
+        right: 14px;
+        z-index: 4;
+        width: min(460px, calc(100% - 28px));
+        padding: 14px 16px;
+        border-radius: 20px;
+        font-size: 17px;
+        line-height: 1.35;
+      }
+
+      .camera-controls {
+        position: absolute !important;
+        bottom: max(calc(env(safe-area-inset-bottom, 0px) + 26px), 26px) !important;
+        z-index: 5 !important;
+        display: grid !important;
+        grid-template-columns: 1fr auto 1fr !important;
+        align-items: center !important;
+      }
+
+      .camera-controls .ghost-button,
+      .camera-controls .ghost-spacer {
+        justify-self: start !important;
+      }
+
+      .camera-controls .capture-button {
+        justify-self: center !important;
+      }
+
+      .ghost-button {
+        min-width: 86px;
+        padding: 14px 18px;
+        border-radius: 999px;
+        color: #f6f9fd;
+        border: 0;
+      }
+
+      .ghost-spacer {
+        width: 86px;
+        height: 1px;
+      }
+
+      .capture-button {
+        position: relative !important;
+        display: block !important;
+        width: 116px !important;
+        height: 116px !important;
+        min-width: 116px !important;
+        min-height: 116px !important;
+        padding: 0 !important;
+        border-radius: 999px !important;
+        border: 1px solid rgba(255, 255, 255, 0.14) !important;
+        background: rgba(248, 238, 219, 0.28) !important;
+        overflow: hidden !important;
+      }
+
+      .capture-button.busy {
+        opacity: 0.9 !important;
+      }
+
+      .capture-ring {
+        position: absolute !important;
+        left: 50% !important;
+        top: 38px !important;
+        width: 64px !important;
+        height: 64px !important;
+        transform: translate(-50%, -50%) !important;
+        border-radius: 999px !important;
+        background: rgba(243, 255, 247, 0.98) !important;
+        border: 4px solid rgba(145, 233, 177, 0.98) !important;
+        box-shadow: 0 5px 18px rgba(0, 0, 0, 0.16) !important;
+      }
+
+      .capture-text {
+        position: absolute !important;
+        left: 50% !important;
+        bottom: 14px !important;
+        transform: translateX(-50%) !important;
+        width: calc(100% - 16px) !important;
+        text-align: center !important;
+        font-size: 12px !important;
+        font-weight: 800 !important;
+        letter-spacing: 0.06em !important;
+        line-height: 1.2 !important;
+        text-transform: uppercase !important;
+      }
+
+      .hero-shot-animation {
+        position: absolute;
+        inset: 0;
+        z-index: 6;
+        pointer-events: none;
+      }
+
+      .hero-shot-box {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: min(72vw, 320px);
+        aspect-ratio: 3 / 4;
+        border: 2px solid rgba(255, 255, 255, 0.96);
+        border-radius: 24px;
+        transform: translate(-50%, -50%);
+        box-shadow: 0 0 0 9999px rgba(255, 255, 255, 0.03) inset;
+        animation: heroBoxFly 720ms cubic-bezier(.18,.86,.26,1) forwards;
+      }
+
+      .hero-shot-mini {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: min(72vw, 320px);
+        aspect-ratio: 3 / 4;
+        border-radius: 24px;
+        background-size: cover;
+        background-position: center;
+        transform: translate(-50%, -50%);
+        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+        animation: heroThumbFly 720ms cubic-bezier(.18,.86,.26,1) forwards;
+      }
+
+      @keyframes heroBoxFly {
+        0% {
+          left: 50%;
+          top: 50%;
+          width: min(72vw, 320px);
+          transform: translate(-50%, -50%) scale(1);
+          opacity: 1;
+          border-radius: 24px;
+        }
+        65% {
+          opacity: 1;
+        }
+        100% {
+          left: calc(100% - 53px);
+          top: 119px;
+          width: 78px;
+          transform: translate(-50%, -50%) scale(1);
+          opacity: 0;
+          border-radius: 20px;
+        }
+      }
+
+      @keyframes heroThumbFly {
+        0% {
+          left: 50%;
+          top: 50%;
+          width: min(72vw, 320px);
+          transform: translate(-50%, -50%) scale(0.96);
+          opacity: 0.18;
+          border-radius: 24px;
+        }
+        45% {
+          opacity: 0.56;
+        }
+        100% {
+          left: calc(100% - 53px);
+          top: 119px;
+          width: 78px;
+          transform: translate(-50%, -50%) scale(1);
+          opacity: 1;
+          border-radius: 20px;
+        }
+      }
+
+      .review-shell {
+        padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 28px);
+      }
+
+      .review-header {
+        display: grid;
+        grid-template-columns: 112px minmax(0, 1fr);
+        gap: 16px;
+        align-items: center;
+      }
+
+      .review-hero {
+        width: 112px;
+        height: 150px;
+        border-radius: 22px;
+        object-fit: cover;
+      }
+
+      .idea-box {
+        margin-top: 16px;
+        padding: 16px;
+        border-radius: 22px;
+      }
+
+      .idea-label {
+        margin-bottom: 6px;
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        opacity: 0.74;
+      }
+
+      .best-strip {
+        display: grid;
+        gap: 10px;
+        margin-top: 16px;
+      }
+
+      .best-pill {
+        display: grid;
+        grid-template-columns: 84px minmax(0, 1fr);
         gap: 12px;
-        margin-top: 20px;
+        align-items: center;
+        padding: 10px;
+        border-radius: 20px;
       }
-      .review-actions > button {
-        flex: 1 1 180px;
+
+      .best-pill img {
+        width: 84px;
+        height: 84px;
+        border-radius: 16px;
+        object-fit: cover;
       }
+
+      .best-pill strong,
+      .best-pill span,
+      .best-pill small {
+        display: block;
+      }
+
+      .best-pill span,
+      .best-pill small {
+        color: rgba(245, 247, 251, 0.72);
+      }
+
+      .pipeline-box {
+        display: grid;
+        gap: 6px;
+        margin-top: 16px;
+        padding: 16px;
+        border-radius: 20px;
+      }
+
+      .review-actions {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-top: 18px;
+      }
+
       .debug-toggle {
         position: fixed;
-        right: 14px;
-        bottom: calc(env(safe-area-inset-bottom, 0px) + 12px);
-        z-index: 24;
-        min-height: 42px;
+        right: 12px;
+        bottom: 12px;
+        z-index: 30;
+        border: 0;
         border-radius: 999px;
-        padding: 0 14px;
-        border: 1px solid rgba(255,255,255,0.12);
-        background: rgba(15,19,28,0.82);
-        color: #ffffff;
-        backdrop-filter: blur(14px);
+        padding: 10px 12px;
+        background: rgba(12, 14, 18, 0.82);
+        color: #fff;
       }
+
       .debug-drawer {
         position: fixed;
         left: 12px;
         right: 12px;
-        bottom: calc(env(safe-area-inset-bottom, 0px) + 62px);
-        z-index: 23;
-        max-height: min(58dvh, 520px);
+        z-index: 30;
+        max-height: min(58vh, 500px);
         overflow: auto;
-        border-radius: 20px;
         padding: 14px;
-        background: rgba(7,10,15,0.96);
-        border: 1px solid rgba(255,255,255,0.08);
-        box-shadow: 0 24px 80px rgba(0,0,0,0.44);
+        border-radius: 20px;
+        background: rgba(8, 9, 12, 0.92);
+        color: #f5f7fb;
       }
-      .debug-drawer h3 {
-        margin: 0 0 8px;
-        font-size: 13px;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        color: rgba(255,255,255,0.6);
-      }
-      .debug-drawer section + section {
-        margin-top: 12px;
-      }
+
       .debug-drawer pre {
-        margin: 0;
         white-space: pre-wrap;
         word-break: break-word;
-        font-size: 12px;
-        line-height: 1.4;
-        color: rgba(255,255,255,0.86);
       }
-      @keyframes heroBoxShrink {
-        0% {
-          opacity: 0;
-          width: min(62vw, 300px);
-          transform: translate(-50%, -50%) scale(1.03);
-        }
-        10% { opacity: 1; }
-        100% {
-          left: calc(100% - 62px);
-          top: calc(env(safe-area-inset-top, 0px) + 78px);
-          width: 88px;
-          opacity: 0;
-          transform: translate(-50%, -50%) scale(1);
-        }
-      }
-      @keyframes heroThumbReveal {
-        0%, 62% {
-          opacity: 0;
-          transform: scale(0.72);
-        }
-        100% {
-          opacity: 1;
-          transform: scale(1);
-        }
-      }
-      @keyframes spin {
-        to { transform: rotate(360deg); }
-      }
-      @keyframes waitDot {
-        0%, 100% { opacity: 0.35; transform: translateY(0); }
-        50% { opacity: 1; transform: translateY(-4px); }
-      }
+
       @media (max-width: 420px) {
-        .hero-thumb,
-        .hero-capture-fly-thumb {
-          width: 76px;
-          height: 102px;
-          border-radius: 18px;
-        }
         .hud.top {
-          padding-right: 88px;
+          top: 62px;
+          gap: 7px;
         }
+
+        .score-pill,
+        .mini-stat {
+          padding: 10px 12px;
+        }
+
         .guide-pill {
-          max-width: calc(100% - 8px);
+          width: 100%;
         }
+
+        .hero-thumb-wrap {
+          top: 62px;
+          width: 72px;
+          height: 98px;
+        }
+
         .status-strip {
-          bottom: max(calc(env(safe-area-inset-bottom, 0px) + 118px), 118px);
-          font-size: 14px;
+          bottom: calc(env(safe-area-inset-bottom, 0px) + 32px);
+          width: min(370px, calc(100% - 28px));
+          font-size: 16px;
         }
-        .camera-controls {
-          bottom: max(calc(env(safe-area-inset-bottom, 0px) + 24px), 24px);
-        }
-        .capture-button {
-          width: 86px;
-          height: 86px;
-          flex-basis: 86px;
-        }
+
+        .ghost-button,
         .ghost-spacer {
-          width: 86px;
-          flex-basis: 86px;
+          min-width: 80px;
+          width: 80px;
         }
-        .review-header,
-        .best-pill {
+
+        .capture-button {
+          width: 112px !important;
+          height: 112px !important;
+          min-width: 112px !important;
+          min-height: 112px !important;
+        }
+
+        .capture-ring {
+          top: 37px !important;
+          width: 62px !important;
+          height: 62px !important;
+        }
+
+        .review-header {
           grid-template-columns: 88px minmax(0, 1fr);
         }
+
         .review-hero {
           width: 88px;
-          height: 118px;
+          height: 120px;
         }
       }
     `}</style>
-  )
-}
-
-function WaitingScreen({ status, reelUrl }) {
-  return (
-    <div className="screen wait-screen">
-      <div className="wait-shell">
-        <div className="wait-card">
-          <div className="wait-spinner" />
-          <h2>{reelUrl ? 'Your reel link is ready' : 'Preparing your reel…'}</h2>
-          <p>{status || 'Packaging the selected shots and preparing the reel link.'}</p>
-          {reelUrl ? (
-            <div className="wait-link-block">
-              <span className="wait-link-label">Reel URL</span>
-              <a className="wait-link" href={reelUrl} target="_blank" rel="noreferrer">Open reel link</a>
-              <div className="wait-link-raw">{reelUrl}</div>
-            </div>
-          ) : (
-            <div className="wait-dots" aria-hidden>
-              <span />
-              <span />
-              <span />
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
   )
 }
 
@@ -910,7 +876,7 @@ function IntroScreen({ onStart, config, loadingConfig }) {
     <div className="screen intro-screen">
       <div className="intro-glow" />
       <div className="intro-card">
-        <div className="eyebrow">Demo PoC</div>
+        <div className="eyebrow">AI Hackathon</div>
         <h1>{APP_TITLE}</h1>
         <p>
           One tap to enter the camera. Capture a hero image, harvest strong moments, then generate a story.
@@ -967,33 +933,43 @@ function CameraScreen({
   latencyAvg,
   guide,
   heroThumb,
-  heroThumbReady,
-  heroFxActive,
-  heroFxPreview,
   status,
-  mode,
+  viewport,
+  heroAnim,
 }) {
-  return (
-    <div className="screen camera-screen">
-      <video ref={videoRef} className="camera-video" playsInline muted autoPlay />
-      <div className="camera-overlay top-gradient" />
-      <div className="camera-overlay bottom-gradient" />
+  const stageStyle = viewport
+    ? { width: `${viewport.cssWidth}px`, height: `${viewport.cssHeight}px` }
+    : undefined
 
-      {heroFxActive && heroFxPreview ? (
-        <div className="hero-capture-fx" aria-hidden>
-          <div className="hero-capture-box" />
-          <img src={heroFxPreview} alt="" className="hero-capture-fly-thumb" />
+  return (
+    <div className="screen camera-screen" style={stageStyle}>
+      <div className="camera-stage" style={stageStyle}>
+        <video
+          ref={videoRef}
+          className="camera-video"
+          playsInline
+          muted
+          autoPlay
+          style={stageStyle}
+        />
+        <div className="camera-overlay top-gradient" />
+        <div className="camera-overlay bottom-gradient" />
+      </div>
+
+      {heroAnim?.active ? (
+        <div className="hero-shot-animation" key={heroAnim.token}>
+          <div className="hero-shot-box" />
+          <div
+            className="hero-shot-mini"
+            style={heroAnim.thumbUrl ? { backgroundImage: `url(${heroAnim.thumbUrl})` } : undefined}
+          />
         </div>
       ) : null}
 
       <TopHud score={score} kept={kept} framesSeen={framesSeen} latencyAvg={latencyAvg} guide={guide} />
 
       <div className="hero-thumb-wrap">
-        {heroThumb ? (
-          <img src={heroThumb} alt="Hero still" className={`hero-thumb ${heroThumbReady ? '' : 'pending'}`} />
-        ) : (
-          <div className="hero-thumb placeholder" />
-        )}
+        {heroThumb ? <img src={heroThumb} alt="Hero still" className="hero-thumb" /> : <div className="hero-thumb placeholder" />}
       </div>
 
       <div className="phase-chip">{phaseLabel}</div>
@@ -1122,7 +1098,6 @@ export default function App() {
   const framesSeenRef = useRef(0)
   const keptCountRef = useRef(0)
   const consecutiveErrorsRef = useRef(0)
-  const heroFxTimersRef = useRef([])
 
   const [config, setConfig] = useState({})
   const [loadingConfig, setLoadingConfig] = useState(true)
@@ -1147,32 +1122,39 @@ export default function App() {
   const [events, setEvents] = useState([])
   const [cameraBootPending, setCameraBootPending] = useState(false)
   const [streamNonce, setStreamNonce] = useState(0)
-  const [heroThumbReady, setHeroThumbReady] = useState(false)
-  const [heroFxActive, setHeroFxActive] = useState(false)
-  const [heroFxPreview, setHeroFxPreview] = useState('')
-  const [reelUrl, setReelUrl] = useState('')
-
-
-  function clearHeroFxTimers() {
-    heroFxTimersRef.current.forEach((timer) => clearTimeout(timer))
-    heroFxTimersRef.current = []
-  }
-
-  function runHeroCaptureFx(previewUrl) {
-    clearHeroFxTimers()
-    setHeroFxPreview(previewUrl)
-    setHeroThumbReady(false)
-    setHeroFxActive(true)
-    heroFxTimersRef.current.push(setTimeout(() => {
-      setHeroFxActive(false)
-      setHeroThumbReady(true)
-    }, HERO_ANIMATION_MS))
-  }
+  const [viewport, setViewport] = useState(() => applyViewportVars())
+  const [cameraViewport, setCameraViewport] = useState(() => applyViewportVars())
+  const [heroAnim, setHeroAnim] = useState({ active: false, token: 0, thumbUrl: '' })
 
   const stateSummary = useMemo(
     () => ({ phase, mode, score, framesSeen, keptCount, consecutiveErrors, sessionId }),
     [phase, mode, score, framesSeen, keptCount, consecutiveErrors, sessionId],
   )
+
+  useEffect(() => {
+    const syncViewport = () => {
+      const metrics = applyViewportVars()
+      setViewport(metrics)
+      setCameraViewport((prev) => {
+        if (!prev) return metrics
+        if (Math.abs(prev.cssWidth - metrics.cssWidth) > 4 || Math.abs(prev.cssHeight - metrics.cssHeight) > 4) {
+          return metrics
+        }
+        return prev
+      })
+      setDebug((prev) => ({ ...prev, videoDims: `${metrics.cssWidth}x${metrics.cssHeight}` }))
+    }
+    syncViewport()
+    const vv = window.visualViewport
+    window.addEventListener('resize', syncViewport)
+    window.addEventListener('orientationchange', syncViewport)
+    vv?.addEventListener?.('resize', syncViewport)
+    return () => {
+      window.removeEventListener('resize', syncViewport)
+      window.removeEventListener('orientationchange', syncViewport)
+      vv?.removeEventListener?.('resize', syncViewport)
+    }
+  }, [])
 
   function pushEvent(type, payload = {}) {
     const item = { ts: nowIso(), type, ...payload }
@@ -1230,6 +1212,7 @@ export default function App() {
   }
 
   async function attachStreamToVideo(stream, reason = 'attach') {
+    applyViewportVars()
     const video = videoRef.current
     if (!video) {
       pushEvent('video_missing', { reason })
@@ -1244,7 +1227,6 @@ export default function App() {
     video.setAttribute('autoplay', '')
     video.setAttribute('playsinline', 'true')
     video.setAttribute('webkit-playsinline', 'true')
-    video.disablePictureInPicture = true
     video.srcObject = stream
 
     try {
@@ -1325,14 +1307,12 @@ export default function App() {
   useEffect(() => {
     mountedRef.current = true
     pushEvent('app_effect_mounted', { strictModeSafe: true })
-    configureAppChrome()
     loadConfig()
     return () => {
       pushEvent('app_effect_cleanup', { strictModeSafe: true })
       mountedRef.current = false
       stopCamera()
       stopHarvestLoop()
-      clearHeroFxTimers()
       if (heroUrl) URL.revokeObjectURL(heroUrl)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1350,8 +1330,8 @@ export default function App() {
       return
     }
 
-    void requestAppFullscreen()
     setCameraBusy(true)
+    setCameraViewport(applyViewportVars())
     setPhase('camera')
     setMode('hero')
     setStatus('Opening camera…')
@@ -1374,22 +1354,22 @@ export default function App() {
         pushEvent('media_devices_failed', { error: shortError(err) })
       }
 
-      pushEvent('camera_boot_before_gum', { hasVideoRef: Boolean(videoRef.current) })
+      const cameraRequest = buildCameraRequest(cameraViewport)
+      pushEvent('camera_boot_before_gum', {
+        hasVideoRef: Boolean(videoRef.current),
+        viewport: cameraRequest.metrics,
+      })
       let stream = null
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: { ideal: 'environment' },
-            width: { ideal: 1080 },
-            height: { ideal: 1920 },
-            aspectRatio: { ideal: 9 / 16 },
-          },
-          audio: false,
+        stream = await navigator.mediaDevices.getUserMedia(cameraRequest.constraints)
+        pushEvent('camera_stream_opened', {
+          strategy: 'viewport_matched',
+          viewport: cameraRequest.metrics,
+          trackInfo: summarizeTrack(stream.getVideoTracks?.()[0]),
         })
-        pushEvent('camera_stream_opened', { strategy: 'preferred', trackInfo: summarizeTrack(stream.getVideoTracks?.()[0]) })
       } catch (firstErr) {
-        pushEvent('camera_stream_retry', { error: shortError(firstErr) })
-        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+        pushEvent('camera_stream_retry', { error: shortError(firstErr), viewport: cameraRequest.metrics })
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false })
         pushEvent('camera_stream_opened', { strategy: 'fallback', trackInfo: summarizeTrack(stream.getVideoTracks?.()[0]) })
       }
 
@@ -1479,11 +1459,11 @@ export default function App() {
     }, delay)
   }
 
-  async function captureBlob(maxWidth = 1600, quality = 0.9, withDebugSample = false) {
+  async function captureBlob(maxWidth = 1600, quality = 0.9) {
     const video = videoRef.current
     if (!video) throw new Error('Camera video element is missing')
 
-    const ok = videoReady(video) || await waitForVideoReady(video, 1200)
+    const ok = await waitForVideoReady(video, 3500)
     if (!ok) {
       const payload = {
         readyState: video.readyState || 0,
@@ -1507,22 +1487,18 @@ export default function App() {
       canvas = document.createElement('canvas')
       canvasRef.current = canvas
     }
-    if (canvas.width !== outWidth) canvas.width = outWidth
-    if (canvas.height !== outHeight) canvas.height = outHeight
-    const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true, willReadFrequently: withDebugSample })
+    canvas.width = outWidth
+    canvas.height = outHeight
+    const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: true })
     if (!ctx) throw new Error('Canvas is not available')
-    ctx.imageSmoothingEnabled = true
-    ctx.imageSmoothingQuality = 'medium'
     ctx.drawImage(video, 0, 0, outWidth, outHeight)
 
-    if (withDebugSample) {
-      const sample = ctx.getImageData(0, 0, Math.min(outWidth, 20), Math.min(outHeight, 20)).data
-      let total = 0
-      for (let i = 0; i < sample.length; i += 4) total += sample[i] + sample[i + 1] + sample[i + 2]
-      const avgLuma = sample.length ? Math.round(total / (sample.length / 4) / 3) : 0
-      pushEvent('capture_sample', { width: outWidth, height: outHeight, avgLuma, currentTime: Number(video.currentTime || 0).toFixed(3) })
-      updateDebug({ videoReadyState: video.readyState || 0, videoDims: `${width}x${height}`, cameraState: `capture_luma_${avgLuma}` })
-    }
+    const sample = ctx.getImageData(0, 0, Math.min(outWidth, 24), Math.min(outHeight, 24)).data
+    let total = 0
+    for (let i = 0; i < sample.length; i += 4) total += sample[i] + sample[i + 1] + sample[i + 2]
+    const avgLuma = sample.length ? Math.round(total / (sample.length / 4) / 3) : 0
+    pushEvent('capture_sample', { width: outWidth, height: outHeight, avgLuma, currentTime: Number(video.currentTime || 0).toFixed(3) })
+    updateDebug({ videoReadyState: video.readyState || 0, videoDims: `${width}x${height}`, cameraState: `capture_luma_${avgLuma}` })
 
     const blob = await new Promise((resolve, reject) => {
       canvas.toBlob((result) => {
@@ -1535,7 +1511,6 @@ export default function App() {
 
   async function handlePrimary() {
     if (cameraBusy) return
-    void requestAppFullscreen()
     if (mode === 'hero') {
       await runStage1Capture()
       return
@@ -1553,12 +1528,16 @@ export default function App() {
     try {
       setCameraBusy(true)
       setStatus('Reading the first shot…')
-      const blob = await captureBlob(HERO_CAPTURE_MAX_WIDTH, HERO_CAPTURE_QUALITY, true)
+      const blob = await captureBlob(1600, 0.92)
       const previewUrl = URL.createObjectURL(blob)
       if (heroUrl) URL.revokeObjectURL(heroUrl)
       setHeroUrl(previewUrl)
-      runHeroCaptureFx(previewUrl)
-      triggerHaptic(10)
+      const heroAnimToken = Date.now()
+      setHeroAnim({ active: true, token: heroAnimToken, thumbUrl: previewUrl })
+      window.setTimeout(() => {
+        if (!mountedRef.current) return
+        setHeroAnim((prev) => (prev.token === heroAnimToken ? { ...prev, active: false } : prev))
+      }, 760)
 
       const form = new FormData()
       form.append('session_id', sessionId)
@@ -1579,6 +1558,7 @@ export default function App() {
       setStatus(message)
       setGuide('Try Capture again when the frame is steady.')
       updateDebug({ lastError: message, lastNetwork: 'stage1' })
+      setHeroAnim((prev) => ({ ...prev, active: false }))
       pushEvent('stage1_failed', { error: message })
     } finally {
       setCameraBusy(false)
@@ -1615,7 +1595,7 @@ export default function App() {
     let nextDelay = FRAME_INTERVAL_MS
 
     try {
-      const blob = await captureBlob(HARVEST_CAPTURE_MAX_WIDTH, HARVEST_CAPTURE_QUALITY, false)
+      const blob = await captureBlob(1280, 0.82)
       const nextFrameIndex = framesSeenRef.current + 1
       const form = new FormData()
       form.append('session_id', sessionId)
@@ -1627,7 +1607,7 @@ export default function App() {
       const started = performance.now()
       const data = await fetchJson('/api/live/frame', { method: 'POST', body: form }, FRAME_TIMEOUT_MS)
       const latencyMs = Math.round(performance.now() - started)
-      nextDelay = Math.max(140, FRAME_INTERVAL_MS - Math.min(latencyMs, 700))
+      nextDelay = Math.max(150, FRAME_INTERVAL_MS - latencyMs)
 
       const nextFramesSeen = nextFrameIndex
       const nextScore = Number(data.score || data.analysis?.score_0_to_100 || 0)
@@ -1768,6 +1748,7 @@ export default function App() {
     setMode('review')
     setStatus(message)
     setGuide('Collection ready. Review the three best story inputs.')
+    setHeroAnim((prev) => ({ ...prev, active: false }))
     updateDebug({ phase: 'review' })
     pushEvent('enter_review', { message })
     void syncReviewFramesFromSession()
@@ -1796,23 +1777,15 @@ export default function App() {
 
   async function generateStory() {
     try {
-      triggerHaptic([14, 40, 14])
       setGenerating(true)
-      setPhase('waiting')
-      setMode('waiting')
-      setDebugOpen(false)
-      setStatus('Preparing the reel package…')
-      setGuide('')
-      setReelUrl('')
+      setStatus('Preparing story basket…')
       const form = new FormData()
       form.append('session_id', sessionId)
       form.append('enough_moment', 'Collection ready')
       const finalized = await fetchJson('/api/session/finalize', { method: 'POST', body: form }, FINALIZE_TIMEOUT_MS)
       const mergedFinalize = finalized.finalized || {}
-      const nextReelUrl = mergedFinalize?.reel_download_url || mergedFinalize?.story_video_signed_url || mergedFinalize?.share_url || ''
 
       setFinalizeInfo(mergedFinalize)
-      setReelUrl(nextReelUrl)
       const displayFrames =
         mergedFinalize?.shot_manifest ||
         mergedFinalize?.story_seed?.selected_frame_items ||
@@ -1822,16 +1795,15 @@ export default function App() {
         basketAssets: finalized.finalized?.basket_assets?.length || 0,
         selectedCount: finalized.finalized?.selected_count || 0,
         usedFallbackFrame: Boolean(finalized.finalized?.used_fallback_frame),
-        reelUrl: nextReelUrl,
       })
-      setStatus(mergedFinalize?.message || 'Your reel is being prepared. Use the reel URL below once it is ready.')
-      if (nextReelUrl && navigator?.clipboard?.writeText) {
-        navigator.clipboard.writeText(nextReelUrl).catch(() => {})
+      setStatus(mergedFinalize?.message || 'Your reel is on the way.')
+      setGuide('The video will be rendered in 2–3 min.')
+      if (mergedFinalize?.share_url && navigator?.clipboard?.writeText) {
+        navigator.clipboard.writeText(mergedFinalize.share_url).catch(() => {})
       }
     } catch (err) {
       const message = shortError(err)
       setStatus(message)
-      setReelUrl('')
       updateDebug({ lastError: message, lastNetwork: 'finalize' })
       pushEvent('finalize_failed', { error: message })
     } finally {
@@ -1860,15 +1832,11 @@ export default function App() {
     setAnalysis(null)
     setBestFrames([])
     setFinalizeInfo(null)
-    setReelUrl('')
     setGenerating(false)
+    setHeroAnim({ active: false, token: 0, thumbUrl: '' })
     setConsecutiveErrors(0)
     setDebug(initialDebug)
     setEvents([])
-    setHeroThumbReady(false)
-    setHeroFxActive(false)
-    setHeroFxPreview('')
-    clearHeroFxTimers()
     lastSpeakAtRef.current = 0
     requestInFlightRef.current = false
   }
@@ -1896,7 +1864,6 @@ export default function App() {
   useEffect(() => {
     return () => {
       if (heroUrl) URL.revokeObjectURL(heroUrl)
-      clearHeroFxTimers()
     }
   }, [heroUrl])
 
@@ -1947,7 +1914,7 @@ export default function App() {
       cancelled = true
       cleanupDiagnostics()
     }
-  }, [phase, sessionId, streamNonce])
+  }, [phase, sessionId, streamNonce, cameraViewport?.cssWidth, cameraViewport?.cssHeight])
 
   useEffect(() => {
     framesSeenRef.current = framesSeen
@@ -1963,7 +1930,7 @@ export default function App() {
 
   useEffect(() => {
     updateDebug({ phase, sessionId })
-  }, [phase, sessionId, streamNonce])
+  }, [phase, sessionId, streamNonce, cameraViewport?.cssWidth, cameraViewport?.cssHeight])
 
   useEffect(() => {
     const onError = (event) => {
@@ -1984,7 +1951,7 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <AppChromeStyles />
+      <LayoutFixStyles />
       {phase === 'intro' && <IntroScreen onStart={startStory} config={config} loadingConfig={loadingConfig} />}
 
       {phase === 'camera' && (
@@ -2003,18 +1970,9 @@ export default function App() {
           latencyAvg={latencyAvg}
           guide={guide}
           heroThumb={heroUrl}
-          heroThumbReady={heroThumbReady}
-          heroFxActive={heroFxActive}
-          heroFxPreview={heroFxPreview}
           status={status}
-        />
-      )}
-
-
-      {phase === 'waiting' && (
-        <WaitingScreen
-          status={status}
-          reelUrl={reelUrl}
+          viewport={cameraViewport || viewport}
+          heroAnim={heroAnim}
         />
       )}
 
@@ -2030,7 +1988,6 @@ export default function App() {
         />
       )}
 
-      {phase !== 'waiting' && (
       <DebugDrawer
         open={debugOpen}
         onToggle={() => setDebugOpen((prev) => !prev)}
@@ -2039,7 +1996,6 @@ export default function App() {
         config={config}
         stateSummary={stateSummary}
       />
-      )}
     </div>
   )
 }
