@@ -20,17 +20,20 @@ import json
 import mimetypes
 import os
 import random
+import re
 import sys
 import textwrap
 import time
+
+import numpy as np
 from urllib.parse import urlparse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import dotenv
-from PIL import Image
-from moviepy import AudioFileClip, ColorClip, CompositeVideoClip, ImageClip, VideoFileClip, concatenate_videoclips
+from PIL import Image, ImageDraw, ImageFont
+from moviepy import AudioFileClip, ColorClip, CompositeVideoClip, ImageClip, VideoFileClip, concatenate_videoclips, vfx
 
 from google import genai
 from google.cloud import texttospeech
@@ -45,6 +48,16 @@ from google.genai import types
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".webm"}
 DEFAULT_SIZE = (720, 1280)
+DEFAULT_CROSSFADE_SEC = 0.20
+MAX_OVERLAY_SCENES = 3
+OVERLAY_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from", "in", "into",
+    "is", "it", "its", "of", "on", "or", "our", "that", "the", "their", "this", "to", "up",
+    "with", "your", "you", "we", "now", "then", "than", "over", "under", "after", "before",
+    "scene", "story", "shot", "frame", "moment", "space", "home", "room", "object", "visual",
+    "show", "showing", "make", "makes", "made", "good", "better", "best", "real", "reel",
+}
+
 
 
 @dataclass
@@ -217,6 +230,116 @@ def retry_call(
 def existing_generated_file(scene_dir: Path, scene_id: str) -> Optional[Path]:
     matches = sorted(scene_dir.glob(f"{scene_id}_*.png"))
     return matches[0] if matches else None
+
+
+def load_overlay_font(font_size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    font_candidates = [
+        os.getenv("LINGER_FONT_PATH", "").strip(),
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+    ]
+    for candidate in font_candidates:
+        if not candidate:
+            continue
+        try:
+            return ImageFont.truetype(candidate, font_size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+
+def clean_overlay_words(text: str) -> List[str]:
+    words = re.findall(r"[A-Za-z0-9']+", (text or "").lower())
+    cleaned: List[str] = []
+    for word in words:
+        word = word.strip("'")
+        if len(word) < 3 or word in OVERLAY_STOPWORDS or word.isdigit():
+            continue
+        cleaned.append(word)
+    return cleaned
+
+
+def title_case_words(words: List[str]) -> str:
+    return " ".join(word.capitalize() for word in words)
+
+
+def choose_overlay_text(scene: Dict[str, Any], story: Dict[str, Any], scene_index: int) -> Optional[str]:
+    preferred_phrases = [
+        str(scene.get("overlay_text") or "").strip(),
+        str(scene.get("purpose") or "").strip(),
+        str(scene.get("narration") or "").strip(),
+        str(story.get("title") or "").strip(),
+    ]
+    seen: set[str] = set()
+    for phrase in preferred_phrases:
+        if not phrase:
+            continue
+        words = clean_overlay_words(phrase)
+        if len(words) < 2:
+            continue
+        unique_words: List[str] = []
+        for word in words:
+            if word in seen:
+                continue
+            unique_words.append(word)
+            seen.add(word)
+            if len(unique_words) == 3:
+                break
+        if len(unique_words) >= 2:
+            overlay = title_case_words(unique_words[:3])
+            if 5 <= len(overlay) <= 24:
+                return overlay
+    if scene_index == 0:
+        title_words = clean_overlay_words(str(story.get("title") or ""))
+        if len(title_words) >= 2:
+            return title_case_words(title_words[:3])
+    return None
+
+
+def build_overlay_image(text: str, max_width: int) -> Image.Image:
+    font_size = max(34, min(64, max_width // 11))
+    font = load_overlay_font(font_size)
+    dummy = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(dummy)
+    bbox = draw.textbbox((0, 0), text, font=font, stroke_width=2)
+    text_w = max(1, bbox[2] - bbox[0])
+    text_h = max(1, bbox[3] - bbox[1])
+
+    pad_x = max(26, font_size // 2)
+    pad_y = max(16, font_size // 3)
+    radius = max(18, font_size // 2)
+
+    canvas = Image.new("RGBA", (text_w + pad_x * 2, text_h + pad_y * 2), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(canvas)
+    draw.rounded_rectangle(
+        (0, 0, canvas.width - 1, canvas.height - 1),
+        radius=radius,
+        fill=(10, 10, 12, 118),
+        outline=(255, 255, 255, 32),
+        width=1,
+    )
+    text_origin = (pad_x, pad_y - bbox[1] // 2)
+    draw.text(
+        text_origin,
+        text,
+        font=font,
+        fill=(255, 255, 255, 245),
+        stroke_width=2,
+        stroke_fill=(0, 0, 0, 150),
+    )
+    return canvas
+
+
+def build_text_overlay_clip(text: str, duration: float, size: Tuple[int, int], lane_index: int = 0) -> Any:
+    overlay_image = build_overlay_image(text, int(size[0] * 0.82))
+    clip = ImageClip(np.array(overlay_image)).with_duration(duration)
+    fade_in = min(0.22, max(0.08, duration * 0.16))
+    fade_out = min(0.24, max(0.10, duration * 0.18))
+    base_y = int(size[1] * 0.72) + lane_index * 48
+    drift = min(18, max(8, int(size[1] * 0.012)))
+    positioned = clip.with_position(lambda t: ("center", base_y - drift * (t / max(duration, 0.01))))
+    return positioned.with_effects([vfx.FadeIn(fade_in), vfx.FadeOut(fade_out)]).with_opacity(0.92)
 
 
 # ---------- Client ----------
@@ -774,6 +897,7 @@ def plan_storyboard(
         - prefer existing assets when possible
         - use generated_image only for scenes that truly need it
         - hero and fit-proof shots should stay grounded in the real capture when possible
+        - for still-image scenes, prefer subtle cinematic movement via camera_motion; avoid "none" unless a locked frame is truly necessary
         - narration should fit a {target_duration_sec}-second voiceover, so keep it concise
         - image_prompt must be production-ready and avoid text artifacts, watermark, gibberish, ugly anatomy, low detail
         - asset_ref must match a real file_id when asset_mode is existing_image or existing_clip
@@ -803,7 +927,7 @@ def normalize_storyboard(story: Dict[str, Any], assets: List[MediaAsset], target
 
     first_image = next((a.file_id for a in assets if a.kind == "image"), "")
     first_video = next((a.file_id for a in assets if a.kind == "video"), "")
-    for scene in scenes:
+    for index, scene in enumerate(scenes):
         if scene["asset_mode"] == "existing_image" and scene["asset_ref"] not in valid_ids:
             scene["asset_ref"] = first_image
         elif scene["asset_mode"] == "existing_clip" and scene["asset_ref"] not in valid_ids:
@@ -812,6 +936,11 @@ def normalize_storyboard(story: Dict[str, Any], assets: List[MediaAsset], target
                 scene["asset_mode"] = "existing_image"
         elif scene["asset_mode"] == "generated_image":
             scene["asset_ref"] = ""
+
+        if scene["asset_mode"] in {"existing_image", "generated_image"}:
+            motion = scene.get("camera_motion", "none")
+            if motion not in set(DEFAULT_STILL_MOTIONS):
+                scene["camera_motion"] = DEFAULT_STILL_MOTIONS[index % len(DEFAULT_STILL_MOTIONS)]
 
     durations = [max(2.0, float(scene.get("duration_sec", 5))) for scene in scenes]
     total = sum(durations)
@@ -1183,14 +1312,74 @@ def cover_clip(clip: Any, size: Tuple[int, int]) -> Any:
     return clip.cropped(x_center=clip.w / 2, y_center=clip.h / 2, width=target_w, height=target_h)
 
 
+DEFAULT_STILL_MOTIONS = ("slow_zoom_in", "slow_zoom_out", "pan_left", "pan_right")
+
+
+def choose_default_still_motion(scene: Dict[str, Any]) -> str:
+    scene_id = str(scene.get("scene_id", ""))
+    digits = "".join(ch for ch in scene_id if ch.isdigit())
+    if digits:
+        idx = (int(digits) - 1) % len(DEFAULT_STILL_MOTIONS)
+    else:
+        idx = sum(ord(ch) for ch in scene_id) % len(DEFAULT_STILL_MOTIONS)
+    return DEFAULT_STILL_MOTIONS[idx]
+
+
+def build_animated_image_clip(asset_path: str, duration: float, size: Tuple[int, int], motion: str) -> Any:
+    target_w, target_h = size
+    base = ImageClip(asset_path).with_duration(duration)
+    fill_scale = max(target_w / max(base.w, 1), target_h / max(base.h, 1))
+    progress_divisor = max(duration, 0.01)
+
+    if motion == "slow_zoom_out":
+        start_scale = fill_scale * 1.12
+        end_factor = 0.93
+        animated = base.resized(start_scale).resized(
+            lambda t: max(1.0, end_factor + (1.0 - end_factor) * (t / progress_divisor))
+        )
+        positioned = animated.with_position("center")
+    elif motion == "pan_left":
+        pan_scale = fill_scale * 1.12
+        animated = base.resized(pan_scale)
+        travel_x = max(animated.w - target_w, 0)
+        travel_y = max(animated.h - target_h, 0)
+        positioned = animated.with_position(
+            lambda t: (
+                -travel_x * (t / progress_divisor),
+                -(travel_y * (0.35 + 0.30 * (t / progress_divisor))),
+            )
+        )
+    elif motion == "pan_right":
+        pan_scale = fill_scale * 1.12
+        animated = base.resized(pan_scale)
+        travel_x = max(animated.w - target_w, 0)
+        travel_y = max(animated.h - target_h, 0)
+        positioned = animated.with_position(
+            lambda t: (
+                -travel_x * (1.0 - (t / progress_divisor)),
+                -(travel_y * (0.65 - 0.30 * (t / progress_divisor))),
+            )
+        )
+    else:
+        animated = base.resized(fill_scale).resized(lambda t: 1.0 + 0.08 * (t / progress_divisor))
+        positioned = animated.with_position("center")
+
+    return CompositeVideoClip([positioned], size=size).with_duration(duration)
+
+
 def build_scene_clip(
     scene: Dict[str, Any],
     asset_path: str,
     size: Tuple[int, int],
+    *,
+    duration_override: Optional[float] = None,
 ) -> Any:
-    duration = float(scene["duration_sec"])
+    duration = float(duration_override if duration_override is not None else scene["duration_sec"])
     motion = scene.get("camera_motion", "none")
     suffix = Path(asset_path).suffix.lower()
+
+    if suffix not in VIDEO_EXTS and motion in {None, "", "none"}:
+        motion = choose_default_still_motion(scene)
 
     debug(
         f"Building scene {scene['scene_id']} | source={Path(asset_path).name} | mode={scene['asset_mode']} | "
@@ -1206,19 +1395,49 @@ def build_scene_clip(
             base = concatenate_videoclips([base, hold_frame], method="compose")
         clip = cover_clip(base, size)
     else:
-        clip = cover_clip(ImageClip(asset_path).with_duration(duration), size)
-        if motion == "slow_zoom_in":
-            clip = clip.resized(lambda t: 1.0 + 0.05 * (t / max(duration, 0.01)))
-            clip = cover_clip(clip, size)
-        elif motion == "slow_zoom_out":
-            clip = clip.resized(lambda t: 1.05 - 0.05 * (t / max(duration, 0.01)))
-            clip = cover_clip(clip, size)
-        elif motion == "pan_left":
-            clip = clip.with_position(lambda t: (-40 * (t / max(duration, 0.01)), "center"))
-        elif motion == "pan_right":
-            clip = clip.with_position(lambda t: (40 * (t / max(duration, 0.01)), "center"))
+        clip = build_animated_image_clip(asset_path, duration, size, motion)
 
     return clip.with_duration(duration)
+
+
+def resolve_scene_asset_path(scene: Dict[str, Any], asset_lookup: Dict[str, MediaAsset], generated_paths: Dict[str, str]) -> str:
+    if scene["asset_mode"] == "generated_image":
+        return generated_paths[scene["scene_id"]]
+    return asset_lookup[scene["asset_ref"]].path
+
+
+def build_overlay_plan(story: Dict[str, Any], max_overlay_scenes: int = MAX_OVERLAY_SCENES) -> Dict[str, str]:
+    plan: Dict[str, str] = {}
+    for index, scene in enumerate(story.get("scenes", [])):
+        if len(plan) >= max(0, max_overlay_scenes):
+            break
+        overlay = choose_overlay_text(scene, story, index)
+        if not overlay or overlay in plan.values():
+            continue
+        plan[scene["scene_id"]] = overlay
+    return plan
+
+
+def compose_timeline_with_crossfades(
+    scene_clips: List[Any],
+    scene_starts: List[float],
+    dissolve_sec: float,
+    size: Tuple[int, int],
+) -> Any:
+    timeline_layers: List[Any] = []
+    for index, clip in enumerate(scene_clips):
+        layer = clip.with_start(scene_starts[index])
+        effects = []
+        if dissolve_sec > 0 and index > 0:
+            effects.append(vfx.CrossFadeIn(dissolve_sec))
+        if dissolve_sec > 0 and index < len(scene_clips) - 1:
+            effects.append(vfx.CrossFadeOut(dissolve_sec))
+        if effects:
+            layer = layer.with_effects(effects)
+        timeline_layers.append(layer)
+
+    total_duration = max(scene_starts[-1] + scene_clips[-1].duration, 0.01) if scene_clips else 0.01
+    return CompositeVideoClip(timeline_layers, size=size).with_duration(total_duration)
 
 
 def render_video(
@@ -1229,43 +1448,73 @@ def render_video(
     out_dir: Path,
     size: Tuple[int, int],
     fps: int,
+    crossfade_sec: float = DEFAULT_CROSSFADE_SEC,
+    max_overlay_scenes: int = MAX_OVERLAY_SCENES,
 ) -> Path:
     asset_lookup = {asset.file_id: asset for asset in assets}
     visual_clips: List[Any] = []
+    overlay_clips: List[Any] = []
     video: Optional[Any] = None
     narration: Optional[Any] = None
     background: Optional[Any] = None
     final: Optional[Any] = None
     try:
-        for scene in story["scenes"]:
-            if scene["asset_mode"] == "generated_image":
-                asset_path = generated_paths[scene["scene_id"]]
-            else:
-                asset_path = asset_lookup[scene["asset_ref"]].path
-            visual_clips.append(build_scene_clip(scene, asset_path, size))
+        scenes = story["scenes"]
+        scene_durations = [float(scene["duration_sec"]) for scene in scenes]
+        if not scene_durations:
+            raise ValueError("Cannot render video with zero scenes.")
 
-        video = concatenate_videoclips(visual_clips, method="compose")
+        min_duration = min(scene_durations)
+        dissolve_sec = min(max(0.0, crossfade_sec), max(0.0, min_duration * 0.12))
+        tail_extension = dissolve_sec if len(scenes) > 1 else 0.0
+        scene_starts: List[float] = []
+        cursor = 0.0
+        for duration in scene_durations:
+            scene_starts.append(cursor)
+            cursor += duration
+
+        overlay_plan = build_overlay_plan(story, max_overlay_scenes=max_overlay_scenes)
+        if overlay_plan:
+            debug(f"Overlay text plan: {overlay_plan}")
+
+        for index, scene in enumerate(scenes):
+            asset_path = resolve_scene_asset_path(scene, asset_lookup, generated_paths)
+            clip_duration = scene_durations[index] + (tail_extension if index < len(scenes) - 1 else 0.0)
+            clip = build_scene_clip(scene, asset_path, size, duration_override=clip_duration)
+            visual_clips.append(clip)
+
+            overlay_text = overlay_plan.get(scene["scene_id"])
+            if overlay_text and scene_durations[index] >= 1.2:
+                overlay_duration = max(1.1, min(scene_durations[index] * 0.82, scene_durations[index] - 0.10))
+                overlay = build_text_overlay_clip(
+                    overlay_text,
+                    duration=overlay_duration,
+                    size=size,
+                    lane_index=index % 2,
+                ).with_start(scene_starts[index] + min(0.12, scene_durations[index] * 0.12))
+                overlay_clips.append(overlay)
+
+        video = compose_timeline_with_crossfades(visual_clips, scene_starts, dissolve_sec, size)
         narration = AudioFileClip(str(narration_path))
 
         video_duration = float(video.duration)
         audio_duration = float(narration.duration)
         debug(
             f"Render prep | video_duration={video_duration:.2f}s | audio_duration={audio_duration:.2f}s | "
-            f"fps={fps} | size={size[0]}x{size[1]}"
+            f"fps={fps} | size={size[0]}x{size[1]} | crossfade={dissolve_sec:.2f}s | overlays={len(overlay_clips)}"
         )
         if audio_duration > video_duration:
             delta = audio_duration - video_duration
-            last_scene = story["scenes"][-1]
-            last_path = generated_paths.get(last_scene["scene_id"])
-            if not last_path and last_scene["asset_ref"]:
-                last_path = asset_lookup[last_scene["asset_ref"]].path
-            extension = build_scene_clip({**last_scene, "duration_sec": delta}, last_path, size)
+            last_scene = scenes[-1]
+            last_path = resolve_scene_asset_path(last_scene, asset_lookup, generated_paths)
+            extension = build_scene_clip(last_scene, last_path, size, duration_override=delta).with_start(video_duration)
             visual_clips.append(extension)
-            video = concatenate_videoclips([video, extension], method="compose")
+            video = CompositeVideoClip([video, extension], size=size).with_duration(audio_duration)
             debug(f"Extended last scene by {delta:.2f}s to match narration audio")
 
         background = ColorClip(size=size, color=(0, 0, 0), duration=video.duration)
-        final = CompositeVideoClip([background, video.with_position("center")], size=size).with_audio(narration)
+        composite_layers = [background, video.with_position("center"), *overlay_clips]
+        final = CompositeVideoClip(composite_layers, size=size).with_audio(narration)
         out_path = out_dir / "final_story.mp4"
         debug(f"Writing final video -> {out_path} | codec=libx264 | audio_codec=aac")
         final.write_videofile(
@@ -1279,6 +1528,11 @@ def render_video(
         debug(f"Saved final video -> {out_path.name} ({format_bytes(file_size_bytes(out_path))})")
         return out_path
     finally:
+        for clip in overlay_clips:
+            try:
+                clip.close()
+            except Exception:
+                pass
         for clip in visual_clips:
             try:
                 clip.close()
@@ -1313,6 +1567,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--judge-model", default="gemini-2.5-flash-lite")
     parser.add_argument("--tts-voice", default="en-US-Chirp3-HD-Charon")
     parser.add_argument("--tts-rate", type=float, default=1.0)
+    parser.add_argument("--crossfade-sec", type=float, default=DEFAULT_CROSSFADE_SEC, help="Very short cross-dissolve duration between scenes.")
+    parser.add_argument("--max-overlay-scenes", type=int, default=MAX_OVERLAY_SCENES, help="Maximum number of short floating text overlays to auto-inject.")
     return parser.parse_args()
 
 
@@ -1439,6 +1695,8 @@ def main() -> None:
         out_dir=out_dir,
         size=size,
         fps=args.fps,
+        crossfade_sec=args.crossfade_sec,
+        max_overlay_scenes=args.max_overlay_scenes,
     )
     logger.record_step(
         "render_video",
