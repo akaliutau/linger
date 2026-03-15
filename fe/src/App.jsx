@@ -94,6 +94,25 @@ function prettyRole(role) {
   return normalizeRole(role).replace(/_/g, ' ')
 }
 
+function frameImageUrl(frame, heroUrl = '') {
+  const base = String(
+    frame?.preview_url ||
+    frame?.local_preview_url ||
+    frame?.image_url ||
+    ''
+  ).trim()
+
+  if (!base) return heroUrl || ''
+
+  const stamp =
+    frame?.ts_ms ||
+    frame?.frame_index ||
+    frame?.score_0_to_100 ||
+    'review'
+
+  return `${base}${base.includes('?') ? '&' : '?'}v=${encodeURIComponent(String(stamp))}`
+}
+
 function publicGuideFor(score, selected, keptTotal, role = '') {
   const normalized = normalizeRole(role)
 
@@ -276,7 +295,12 @@ function CameraScreen({
 function ReviewScreen({ heroUrl, analysis, generating, onGenerate, onReset, finalizeInfo, bestFrames }) {
   const hook = finalizeInfo?.story_seed?.hook || analysis?.story_signal || 'A grounded second-life idea built from the best room evidence.'
   const strategy = finalizeInfo?.story_seed?.generation_strategy || ''
-  const shownFrames = (bestFrames || []).slice(0, 3)
+  const shownFrames = (
+    finalizeInfo?.shot_manifest ||
+    finalizeInfo?.story_seed?.selected_frame_items ||
+    bestFrames ||
+    []
+  ).slice(0, 3)
 
   return (
     <div className="screen review-screen">
@@ -300,8 +324,8 @@ function ReviewScreen({ heroUrl, analysis, generating, onGenerate, onReset, fina
           {!!shownFrames.length && (
             <div className="best-strip">
               {shownFrames.map((frame) => (
-                <div className="best-pill" key={frame.local_path || frame.frame_index}>
-                  <img src={frame.preview_url || frame.local_preview_url || heroUrl} alt={frame.moment_label || 'Best frame'} />
+                <div className="best-pill" key={frame.local_path || frame.file_name || frame.frame_index || frame.preview_url || frame.local_preview_url}>
+                  <img src={frameImageUrl(frame, heroUrl)} alt={frame.moment_label || 'Best frame'} loading="eager" />
                   <div>
                     <strong>{frame.moment_label || prettyRole(frame.cinematic_role)}</strong>
                     <span>{prettyRole(frame.cinematic_role)} · {frame.score_0_to_100}/100</span>
@@ -840,7 +864,7 @@ export default function App() {
       const selected = Boolean(data.selected)
       const fallbackSelected = Boolean(data.fallback_selected)
       const nextRole = normalizeRole(data.candidate?.cinematic_role || data.analysis?.cinematic_role)
-      const nextGuide = String(data.guidance || publicGuideFor(nextScore, selected, nextKept, nextRole)).trim()
+      const nextGuide = String(data.guidance || publicGuideFor(nextScore, selected || fallbackSelected, effectiveKept, nextRole)).trim()
       const previousBest = scoreRef.current
 
       framesSeenRef.current = nextFramesSeen
@@ -852,7 +876,7 @@ export default function App() {
       setKeptCount(effectiveKept)
       setLatencyAvg(Number(data.avg_latency_ms || 0))
       setGuide(nextGuide)
-      setStatus(selected ? 'Strong moment saved.' : (fallbackSelected ? 'Best attempt updated.' : 'Scanning for the next strong frame.'))
+      setStatus(selected ? 'Strong moment saved.' : 'Scanning for the next strong frame.')
       setConsecutiveErrors(0)
 
       updateDebug({
@@ -865,7 +889,6 @@ export default function App() {
         frameIndex: nextFrameIndex,
         score: nextScore,
         selected,
-        fallbackSelected,
         role: nextRole,
         latencyMs,
         rawGuidance: data.guidance || '',
@@ -878,8 +901,8 @@ export default function App() {
         })
       }
 
-      if (shouldSpeakSpike(previousBest, nextScore, selected, Date.now(), lastSpeakAtRef.current, nextRole)) {
-        const line = voiceLineFromFrameResult(data, nextScore, selected, nextKept, nextRole)
+      if (shouldSpeakSpike(previousBest, nextScore, selected || fallbackSelected, Date.now(), lastSpeakAtRef.current, nextRole)) {
+        const line = voiceLineFromFrameResult(data, nextScore, selected || fallbackSelected, effectiveKept, nextRole)
         lastSpeakAtRef.current = Date.now()
         void speakGuide(line)
         pushEvent('voice_spike', { score: nextScore, role: nextRole, line })
@@ -890,10 +913,10 @@ export default function App() {
         ((effectiveKept >= AUTO_STOP_TARGET_KEPT && nextFramesSeen >= 5) || nextFramesSeen >= AUTO_STOP_AFTER_FRAMES)
 
       if (shouldAutoStop) {
-        const usedFallbackOnly = nextKept === 0 && nextScore > 0
+        const usedFallbackOnly = effectiveKept > 0 && nextKept === 0
         enterReview(
           data.stop_reason ||
-          (nextKept >= AUTO_STOP_TARGET_KEPT
+          (effectiveKept >= AUTO_STOP_TARGET_KEPT
             ? 'Collection ready.'
             : usedFallbackOnly
               ? 'Best attempt saved. Review the top frame.'
@@ -972,9 +995,31 @@ export default function App() {
     setPhase('review')
     setMode('review')
     setStatus(message)
-    setGuide('Collection ready. Review the best story inputs.')
+    setGuide('Collection ready. Review the three best story inputs.')
     updateDebug({ phase: 'review' })
     pushEvent('enter_review', { message })
+    void syncReviewFramesFromSession()
+  }
+
+  async function syncReviewFramesFromSession() {
+    try {
+      const state = await fetchJson(`/api/session/${encodeURIComponent(sessionId)}`, {}, 10000)
+      const frames = (
+        (Array.isArray(state.best_frames) && state.best_frames.length
+          ? state.best_frames
+          : state.fallback_top_frame
+            ? [state.fallback_top_frame]
+            : []
+        )
+      ).slice(0, 3)
+
+      setBestFrames(frames)
+      pushEvent('review_frames_synced', { count: frames.length })
+    } catch (err) {
+      const message = shortError(err)
+      updateDebug({ lastError: message, lastNetwork: 'session_review_sync' })
+      pushEvent('review_frames_sync_failed', { error: message })
+    }
   }
 
   async function generateStory() {
@@ -994,13 +1039,16 @@ export default function App() {
       }
 
       setFinalizeInfo(mergedFinalize)
-      const finalizedFrames = (state.best_frames && state.best_frames.length)
-        ? state.best_frames.slice(0, 3)
-        : (state.fallback_top_frame ? [state.fallback_top_frame] : [])
-      setBestFrames(finalizedFrames)
+      const displayFrames =
+        mergedFinalize?.shot_manifest ||
+        mergedFinalize?.story_seed?.selected_frame_items ||
+        (state.best_frames || []).slice(0, 3) ||
+        (state.fallback_top_frame ? [state.fallback_top_frame] : [])
+      setBestFrames(Array.isArray(displayFrames) ? displayFrames.slice(0, 3) : [])
       pushEvent('finalized', {
         basketAssets: finalized.finalized?.basket_assets?.length || 0,
         selectedCount: finalized.finalized?.selected_count || 0,
+        usedFallbackFrame: Boolean(finalized.finalized?.used_fallback_frame),
       })
 
       setStatus(
@@ -1094,6 +1142,11 @@ export default function App() {
   useEffect(() => {
     scoreRef.current = score
   }, [score])
+
+  useEffect(() => {
+    if (phase !== 'review') return
+    void syncReviewFramesFromSession()
+  }, [phase, sessionId])
 
   useEffect(() => {
     if (phase !== 'camera' || !streamRef.current || !videoRef.current) return
