@@ -24,8 +24,8 @@ gcloud services enable aiplatform.googleapis.com compute.googleapis.com logging.
 # ==========================================
 echo "Creating Service Account: $SA_NAME..."
 gcloud iam service-accounts create $SA_NAME \
-    --description="Service Account for Aethelgard MedGemma endpoints" \
-    --display-name="Aethelgard Vertex SA"
+    --description="Service Account for Linger AI" \
+    --display-name="Linger AI SA"
 
 # create ops are async, wait for eventual update
 sleep 5
