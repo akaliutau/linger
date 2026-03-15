@@ -81,7 +81,7 @@ VIDEO_JOB_NAME = os.getenv("VIDEO_JOB_NAME", "linger-video-job")
 VIDEO_REELS_PREFIX = os.getenv("VIDEO_REELS_PREFIX", "reels")
 VIDEO_SHARE_PREFIX = os.getenv("VIDEO_SHARE_PREFIX", "story")
 APP_BASE_URL = os.getenv("APP_BASE_URL", "").rstrip("/")
-PLACEHOLDER_VIDEO_FILE = os.getenv("PLACEHOLDER_VIDEO_FILE", str(BASE_DIR / "static" / "generating_reel.mp4"))
+PLACEHOLDER_VIDEO_FILE = os.getenv("PLACEHOLDER_VIDEO_FILE", str(BASE_DIR / "generating_reel.mp4"))
 DEBUG_LOG_PROMPTS = os.getenv("DEBUG_LOG_PROMPTS", "true").lower() in {"1", "true", "yes", "on"}
 GUIDE_TTS_ENABLED = os.getenv("GUIDE_TTS_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 GUIDE_TTS_LANGUAGE_CODE = os.getenv("GUIDE_TTS_LANGUAGE_CODE", "en-US")
@@ -490,16 +490,17 @@ class StorageBackend:
         )
 
     def _signed_url(self, blob: storage.Blob) -> Optional[str]:
-        try:
-            return blob.generate_signed_url(
-                version="v4",
-                expiration=timedelta(minutes=SIGNED_URL_EXPIRY_MIN),
-                method="GET",
-                response_disposition="inline",
-            )
-        except Exception as exc:
-            json_log("signed_url_failed", object_name=blob.name, error=str(exc))
-            return None
+        return None
+    #    try:
+    #        return blob.generate_signed_url(
+    #            version="v4",
+    #            expiration=timedelta(minutes=SIGNED_URL_EXPIRY_MIN),
+    #            method="GET",
+    #            response_disposition="inline",
+    #        )
+    #    except Exception as exc:
+    #        json_log("signed_url_failed", object_name=blob.name, error=str(exc))
+    #        return None
 
 
 STORAGE = StorageBackend()
@@ -1184,7 +1185,7 @@ def render_object_name(session_id: str, filename: str) -> str:
 
 
 def upload_placeholder_video(session_id: str) -> Dict[str, Any]:
-    raw_path = PLACEHOLDER_VIDEO_FILE or "static/generating_reel.mp4"
+    raw_path = PLACEHOLDER_VIDEO_FILE or "generating_reel.mp4"
     placeholder_path = Path(raw_path)
 
     candidates = []

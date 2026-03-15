@@ -319,6 +319,7 @@ function ReviewScreen({ heroUrl, analysis, generating, onGenerate, onReset, fina
             <div className="pipeline-box">
               <strong>Your reel is on the way</strong>
               <span>The video will be rendered in 2–3 min.</span>
+              <span/>
               <a href={finalizeInfo.share_url} target="_blank" rel="noreferrer">Open share link</a>
             </div>
           )}

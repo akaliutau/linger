@@ -58,4 +58,10 @@ gcloud run jobs deploy "${JOB_NAME}" \
   --task-timeout "${JOB_TIMEOUT:-3600}" \
   --set-env-vars "PROJECT_ID=${PROJECT_ID},REGION=${REGION},LOCATION=${VIDEO_LOCATION:-global},TARGET_SECONDS=${TARGET_SECONDS:-15},FPS=${FPS:-24},SIZE=${SIZE:-720x1280},UNDERSTAND_MODEL=${UNDERSTAND_MODEL:-gemini-2.5-flash-lite},BRAINSTORM_MODEL=${BRAINSTORM_MODEL:-gemini-2.5-flash},STORY_MODEL=${STORY_MODEL:-gemini-2.5-flash},IMAGE_MODEL=${IMAGE_MODEL:-gemini-2.5-flash-image},JUDGE_MODEL=${JUDGE_MODEL:-gemini-2.5-flash-lite},TTS_VOICE=${TTS_VOICE:-en-US-Chirp3-HD-Charon}"
 
+gcloud run jobs add-iam-policy-binding "$JOB_NAME" \
+  --project="$PROJECT_ID" \
+  --region="$REGION" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/run.jobsExecutorWithOverrides"
+
 echo "Deployed ${JOB_NAME} -> ${IMAGE_URI}"

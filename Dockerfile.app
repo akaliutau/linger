@@ -17,7 +17,7 @@ WORKDIR /app
 COPY requirements.app.txt ./
 RUN pip install --no-cache-dir -r requirements.app.txt
 COPY app.py ./app.py
-COPY static ./static
+COPY generating_reel.mp4 ./generating_reel.mp4
 COPY --from=fe-build /src/fe/dist ./dist
 RUN mkdir -p /app/local_uploads /app/session_cache
 
