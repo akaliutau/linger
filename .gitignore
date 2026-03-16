@@ -212,7 +212,6 @@ utils/printer.py
 .idea/
 */node_modules/
 session_cache/
-docs/
 input/
-#output/
+output/
 
