@@ -1046,33 +1046,37 @@ function ReviewScreen({ heroUrl, analysis, generating, onGenerate, onReset, fina
     <div className="screen review-screen">
       <div className="review-shell">
         <div className="review-card">
-          <div className="review-header">
-            <img src={heroUrl} alt="Hero" className="review-hero" />
-            <div>
-              <div className="eyebrow">Collection ready</div>
-              <h2>{analysis?.object_label || 'Story seed'}</h2>
-              <p className="muted">{analysis?.one_line_summary || 'A compact visual premise for the next reel.'}</p>
-            </div>
-          </div>
-
-          <div className="idea-box">
-            <div className="idea-label">Idea</div>
-            <p>{hook}</p>
-          </div>
-
-          {!!shownFrames.length && (
-            <div className="best-strip">
-              {shownFrames.map((frame) => (
-                <div className="best-pill" key={frame.local_path || frame.file_name || frame.frame_index || frame.preview_url || frame.local_preview_url}>
-                  <img src={frameImageUrl(frame, heroUrl)} alt={frame.moment_label || 'Best frame'} loading="eager" />
-                  <div>
-                    <strong>{frame.moment_label || prettyRole(frame.cinematic_role)}</strong>
-                    <span>{prettyRole(frame.cinematic_role)} · {frame.score_0_to_100}/100</span>
-                    {frame.best_future_use ? <small>{frame.best_future_use}</small> : null}
-                  </div>
+          {!shareUrl && (
+            <>
+              <div className="review-header">
+                <img src={heroUrl} alt="Hero" className="review-hero" />
+                <div>
+                  <div className="eyebrow">Collection ready</div>
+                  <h2>{analysis?.object_label || 'Story seed'}</h2>
+                  <p className="muted">{analysis?.one_line_summary || 'A compact visual premise for the next reel.'}</p>
                 </div>
-              ))}
-            </div>
+              </div>
+
+              <div className="idea-box">
+                <div className="idea-label">Idea</div>
+                <p>{hook}</p>
+              </div>
+
+              {!!shownFrames.length && (
+                <div className="best-strip">
+                  {shownFrames.map((frame) => (
+                    <div className="best-pill" key={frame.local_path || frame.file_name || frame.frame_index || frame.preview_url || frame.local_preview_url}>
+                      <img src={frameImageUrl(frame, heroUrl)} alt={frame.moment_label || 'Best frame'} loading="eager" />
+                      <div>
+                        <strong>{frame.moment_label || prettyRole(frame.cinematic_role)}</strong>
+                        <span>{prettyRole(frame.cinematic_role)} · {frame.score_0_to_100}/100</span>
+                        {frame.best_future_use ? <small>{frame.best_future_use}</small> : null}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
           )}
           {shareUrl ? (
             <div className="pipeline-box generated">
