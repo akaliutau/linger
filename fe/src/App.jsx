@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-const APP_TITLE = 'Linger Story Camera'
+const APP_TITLE = 'Linger Story'
 const HERO_TIMEOUT_MS = 25000
 const FRAME_TIMEOUT_MS = 18000
 const FINALIZE_TIMEOUT_MS = 45000
@@ -247,7 +247,7 @@ function LayoutFixStyles() {
       }
 
       body {
-        overscroll-behavior-y: contain;
+        overscroll-behavior-y: auto;
       }
 
       button,
