@@ -20,7 +20,7 @@ scans your room for inspiration, and generates a compelling second-life concept 
 This project was built for the **Gemini Live Agent Challenge** to develop a NEW next-generation AI Agent that utilizes multimodal inputs 
 and outputs and moves beyond simple text-in/text-out interactions. 
 
-We chose the **Creative Storyteller** category, which focuses on multimodal storytelling with interleaved output.
+Category: **Creative Storyteller with a live camera-first capture experience** (focus on multimodal storytelling with interleaved output).
 
 ### 🗺️ The User Journey (How It Works)
 
@@ -188,6 +188,18 @@ The cloud version is built on the same algorithm
 
 
 ## Project structure
+
+---
+
+## 🧠 Findings and Learnings
+
+During development, we discovered that generating a full 30-second AI video from scratch is computationally expensive 
+and prone to hallucinations. We learned that the "cheapest viable output" that still feels deeply magical is a 
+**motion-comic / visual story** built from the user's *actual* real-world stills. 
+
+By combining these authentic captures with light motion, rich Cloud TTS narration, and only a small amount of premium AI 
+video generation, the output feels incredibly grounded and personal, and greatly suits the environment-context.
+
 
 ## ⚖️ License
 

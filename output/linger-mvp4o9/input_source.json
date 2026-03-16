@@ -1,0 +1,5 @@
+{
+  "input": "gs://linger-data/captures/linger-mvp4o9/basket",
+  "mode": "gcs",
+  "local_bundle_dir": "/tmp/linger-output/downloaded_bundle"
+}

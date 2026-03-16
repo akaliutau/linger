@@ -1,0 +1,16 @@
+{
+  "input_source": {
+    "input": "gs://linger-data/captures/linger-mvp4o9/basket",
+    "mode": "gcs",
+    "local_bundle_dir": "/tmp/linger-output/downloaded_bundle"
+  },
+  "local_input_dir": "/tmp/linger-output/downloaded_bundle",
+  "output_video": "/tmp/linger-output/final_story.mp4",
+  "storyboard": "/tmp/linger-output/storyboard.json",
+  "ideas": "/tmp/linger-output/ideas.json",
+  "metrics": "/tmp/linger-output/metrics.json",
+  "narration": "/tmp/linger-output/narration.wav",
+  "bundle_context": "/tmp/linger-output/bundle_context.json",
+  "generated_image_results": "/tmp/linger-output/generated_image_results.json",
+  "generated_image_qc": "/tmp/linger-output/generated_image_qc.json"
+}

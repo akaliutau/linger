@@ -1,0 +1,64 @@
+{
+  "title": "Nightstand Nook Revival",
+  "logline": "Transform bedroom clutter into a serene, organized space using repurposed plastic bottles.",
+  "visual_style": "clean motion-comic grounded in real room photos",
+  "voice_style": "calm, warm, grounded, inventive",
+  "target_duration_sec": 15,
+  "scenes": [
+    {
+      "scene_id": "scene_1",
+      "duration_sec": 3.0,
+      "asset_mode": "existing_image",
+      "asset_ref": "asset_01",
+      "purpose": "Introduce the problem: a cluttered nightstand with potential waste.",
+      "camera_motion": "slow_zoom_out",
+      "narration": "Is your nightstand a chaotic collection of everyday items?",
+      "image_prompt": "A cluttered nightstand in a bedroom, with various items scattered, a cardboard box, and empty plastic bottles visible. Clean motion-comic style, grounded in real room photos.",
+      "start_sec": 0.0
+    },
+    {
+      "scene_id": "scene_2",
+      "duration_sec": 3.0,
+      "asset_mode": "existing_image",
+      "asset_ref": "asset_03",
+      "purpose": "Highlight the empty plastic bottles as the raw material for transformation.",
+      "camera_motion": "slow_zoom_in",
+      "narration": "Don't toss those empty plastic bottles! They're hidden gems.",
+      "image_prompt": "Three large, empty plastic water bottles leaning against a white wall on a wooden floor, clean motion-comic style, grounded in real room photos.",
+      "start_sec": 3.0
+    },
+    {
+      "scene_id": "scene_3",
+      "duration_sec": 3.0,
+      "asset_mode": "generated_image",
+      "asset_ref": "",
+      "purpose": "Show the simple DIY process of repurposing the bottles.",
+      "camera_motion": "pan_right",
+      "narration": "With a few simple cuts, transform them into stylish organizers.",
+      "image_prompt": "Hands cutting a large plastic water bottle, with other bottles already cut into various shapes for organization. Clean motion-comic style, grounded in real room photos, warm lighting.",
+      "start_sec": 6.0
+    },
+    {
+      "scene_id": "scene_4",
+      "duration_sec": 3.0,
+      "asset_mode": "generated_image",
+      "asset_ref": "",
+      "purpose": "Present the organized nightstand, showcasing the repurposed bottles in use.",
+      "camera_motion": "slow_zoom_in",
+      "narration": "From clutter to calm, your nightstand can be a serene space.",
+      "image_prompt": "A beautifully organized nightstand with repurposed plastic bottle organizers holding small items like pens, jewelry, and remote controls. Clean motion-comic style, grounded in real room photos, warm and inviting atmosphere.",
+      "start_sec": 9.0
+    },
+    {
+      "scene_id": "scene_5",
+      "duration_sec": 3.0,
+      "asset_mode": "generated_image",
+      "asset_ref": "",
+      "purpose": "Conclude with a call to action and the benefit of repurposing.",
+      "camera_motion": "slow_zoom_in",
+      "narration": "Reduce waste, organize your life. Give your bottles a second life!",
+      "image_prompt": "A close-up of a repurposed plastic bottle organizer on a nightstand, holding a small plant or a few neatly arranged items, with a soft, warm glow. Clean motion-comic style, grounded in real room photos, peaceful and inventive.",
+      "start_sec": 12.0
+    }
+  ]
+}

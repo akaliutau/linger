@@ -1,0 +1,44 @@
+[
+  {
+    "file_id": "asset_01",
+    "path": "/tmp/linger-output/downloaded_bundle/best_01.jpg",
+    "kind": "image",
+    "mime_type": "image/jpeg",
+    "width": 1280,
+    "height": 689,
+    "duration_sec": null,
+    "file_name": "best_01.jpg",
+    "moment_label": "Nightstand clutter and bedroom context",
+    "cinematic_role": "room_opportunity",
+    "best_future_use": "This frame can inspire a scene about bedroom organization and decluttering, showing how to repurpose items or create storage solutions.",
+    "score_0_to_100": 75
+  },
+  {
+    "file_id": "asset_02",
+    "path": "/tmp/linger-output/downloaded_bundle/best_02.jpg",
+    "kind": "image",
+    "mime_type": "image/jpeg",
+    "width": 1280,
+    "height": 689,
+    "duration_sec": null,
+    "file_name": "best_02.jpg",
+    "moment_label": "Cardboard box and plastic bottles",
+    "cinematic_role": "room_opportunity",
+    "best_future_use": "This frame can inspire a scene about home organization, recycling, or DIY projects using repurposed materials.",
+    "score_0_to_100": 75
+  },
+  {
+    "file_id": "asset_03",
+    "path": "/tmp/linger-output/downloaded_bundle/hero.jpg",
+    "kind": "image",
+    "mime_type": "image/jpeg",
+    "width": 1338,
+    "height": 720,
+    "duration_sec": null,
+    "file_name": "hero.jpg",
+    "moment_label": "Hero object",
+    "cinematic_role": "hero_object",
+    "best_future_use": "anchor still",
+    "score_0_to_100": 100
+  }
+]

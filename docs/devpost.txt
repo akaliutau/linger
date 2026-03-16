@@ -1,0 +1,133 @@
+## Inspiration
+
+The inspiration for Linger came from two directions.
+
+The first was environmental. We were thinking about waste not only as a logistics problem, but as a creativity problem. If reuse is going to become a real everyday behavior, it has to feel personal, lightweight, and even a little magical. We wanted to build something that nudges people to slow down, notice what they already have, and see potential where they would normally see trash.
+
+The second was a product design frustration. So many AI experiences still begin with an empty text box. But this problem does not start in text - it starts in the physical world. It starts with a real object in your hand, in a real room, with real lighting, surfaces, colors, and constraints. That made us ask: what if the interface itself started with the camera, and the AI acted less like a chatbot and more like a creative director? That question became the core of Linger.  
+
+---
+
+## What it does
+
+Linger is designed as a short, beyond-text flow:
+
+1. The user taps **Start the story**.
+2. They capture one clear "hero" image of the item.
+3. Linger analyzes that image and generates a practical capture plan.
+4. The user records their surrounding space in **Harvest Mode**.
+5. The backend samples stop-shots from the live camera feed and scores them for story value.
+6. Linger keeps only the strongest frames.
+7. The app shows a compact story card and then generates a short reel from the collected material.  
+
+Most existing tools focus only on the object. Linger tries to understand all three.
+
+The result is a 15–30 second mixed-media story that feels grounded in the user's actual home rather than assembled from generic inspiration. The output is intentionally not just a text suggestion like "turn this jar into a vase." Instead, it becomes a small visual narrative with a hook, a tone, selected real frames, generated keyframes where needed, narration, and a final composed video.  
+
+---
+
+## How we built it
+
+We built Linger as two connected systems: a **live capture agent** and a **story generation pipeline**. Internally, we think of them as two roles: **the Scout** and **the Director**.  
+
+### 1. The Scout: live capture intelligence
+
+The Scout is the mobile-first camera experience. The frontend is a React app that uses browser camera APIs (`getUserMedia`) to capture a hero frame and later sample stills from a live video stream. The backend is a FastAPI service that owns session state, handles AI calls through the Google GenAI SDK, and scores frames as they arrive. 
+
+The capture flow is deliberately simple:
+
+* one intro screen
+* one persistent camera screen
+* one hero capture
+* one harvest loop
+* one final review state
+
+That simplicity turned out to matter a lot. It makes the product feel live and fluid rather than like a form with extra steps. 
+
+### 2. The Director: storyteller intelligence
+
+Once the best frames are collected, the Director takes over. The Director is an asynchronous backend pipeline that turns those real-world captures into a short visual story. The current PoC uses:
+
+* `gemini-2.5-flash-lite` to interpret images
+* `gemini-2.5-flash` to brainstorm story ideas
+* `gemini-2.5-flash` again to create strict storyboard JSON
+* `gemini-2.5-flash-image` to generate only the missing keyframes
+* Cloud TTS with **Chirp 3 HD** for narration
+* `moviepy` to assemble the final MP4 with subtitles 
+
+A key architectural decision was to keep the genuinely agentic parts agentic, and keep the rest deterministic. The Scout decides what visual evidence is worth collecting. The Director decides how to turn that evidence into a story. But rendering, composition, storage, and most worker-style steps remain deterministic for reliability. 
+
+### 3. The handoff contract
+
+We also designed a clean JSON handoff object between capture and generation. That "basket" contains the session ID, hero image, selected frames, stage-1 analysis, and a compact story seed. This made the pipeline much easier to reason about and debug because the creative stage always starts from a well-defined, grounded input instead of loosely coupled assets floating around the system.  
+
+### 4. Google Cloud and deployment
+
+The project is built around Google's stack: Gemini models via the Google GenAI SDK, Vertex AI / Google Cloud-backed inference, Cloud TTS, and deployment scripts for infrastructure, backend Cloud Run services, and the video job. We also included reproducible local and cloud spin-up instructions in the repo because we wanted judges to be able to see that the system is not just a concept, but a runnable build.  
+
+---
+
+## Challenges we ran into
+
+### 1. The hardest problem was not generation — it was capture quality
+
+Very early on, we realized that a creative pipeline is only as good as the material it receives. If the hero frame is weak or the context frames are blurry, repetitive, or irrelevant, the final story feels generic no matter how good the model is. That pushed us to spend more time than expected on capture readiness, camera lifecycle, and frame selection logic. We had to make sure the app only captured from a video stream that was genuinely ready, with real dimensions and usable frames. 
+
+### 2. Live multimodal systems can easily overwhelm themselves
+
+Another challenge was backpressure. During Harvest Mode, the frontend samples frames on a timer, but if you send too many overlapping requests, the backend gets flooded, latency spikes, and the live experience stops feeling live. We solved this by making the loop backpressure-aware: the frontend only sends a frame when no previous analysis request is still in flight. That kept the interaction much more stable. 
+
+### 3. Fully generated video was too expensive and too ungrounded
+
+One of the biggest product lessons was that generating a long video entirely from scratch is both computationally expensive and prone to hallucinations. It can look impressive in a demo, but it drifts away from the actual object and room that made the idea interesting in the first place. We learned that the strongest "cheap but magical" output was a **motion-comic style story** built from the user's real stills, light animation, narration, and only a small amount of generated imagery. That gave us a much better balance of grounding, speed, and emotional impact.  
+
+### 4. Reliability matters more than purity
+
+Because AI calls are probabilistic, we could not design the app as if the happy path would always work. We had to think about timeouts, storage fallbacks, structured logging, and graceful degradation. If the live AI path becomes unstable, Linger should not collapse — it should degrade into a simpler guided capture flow and still produce something useful. That reliability work was less flashy than the story generation, but it was essential. 
+
+---
+
+## What we learned
+
+This project taught us a lot about building multimodal agents that go beyond chat.
+
+First, **"beyond text" is not just about adding images to an LLM workflow**. The more important shift is interaction design. Once the camera becomes the entry point, the agent has to guide attention, decide what matters, and work with imperfect physical-world inputs. That is a very different design problem from prompt engineering.
+
+Second, we learned that **grounding beats spectacle**. A short reel built from a user's real jar, real shelf, real table, and real lighting is often more compelling than a more ambitious but more hallucinated synthetic video. The authenticity of the captured frames makes the creative output feel personal.
+
+Third, we learned that **good agent architecture is often about boundaries**. Giving the Scout and Director clear roles, plus a stable handoff contract between them, made the whole system easier to scale, debug, and explain.
+
+And finally, we learned that creativity systems need constraints. The project became much stronger when we stopped asking, "How do we generate everything?" and started asking, "What is the smallest amount of generation needed to create delight?"  
+
+---
+
+## What we're proud of
+
+We are especially proud that Linger does not feel like a generic chatbot wrapped around a sustainability message. It is a real multimodal flow:
+
+* it starts with the camera, not the keyboard
+* it uses the object and the surrounding room as input
+* it scores and filters frames in real time
+* it hands grounded evidence into a story generator
+* it outputs a coherent short-form reel rather than just advice  
+
+We are also proud of the system design decisions that make the project feel practical rather than only aspirational: observable state, reproducible setup, deployment scripts, and a pipeline that can run both locally and in the cloud.  
+
+---
+
+## What's next
+
+There are several directions we would love to push further.
+
+One is making the live capture loop even more conversational, with richer voice guidance and a stronger sense of "creative companionship" during scanning.
+
+Another is expanding from single-object stories into room-level transformation suggestions, where multiple overlooked items could be combined into a cohesive design idea.
+
+We also want to deepen the environmental side of the product by eventually estimating impact signals such as waste avoided or reuse potential — not as the main experience, but as a meaningful layer under the story.
+
+Most of all, we want to keep exploring the same core question that inspired the project in the first place:
+**How can AI help people see hidden value in the physical world around them?**
+
+For us, Linger is one answer: an agent that helps an object linger a little longer before it becomes waste.
+
+

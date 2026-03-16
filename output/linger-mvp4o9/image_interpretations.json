@@ -1,0 +1,92 @@
+[
+  {
+    "primary_subject": "A cluttered nightstand next to a bed, with a cardboard box and plastic bottles visible in the foreground.",
+    "room_context": "Bedroom",
+    "best_use_in_story": "This image serves as an establishing shot for a scene focused on bedroom clutter and the potential for organization and repurposing. It sets the scene for a 'before' state, highlighting the need for solutions.",
+    "visual_strengths": [
+      "Clearly depicts a common domestic setting (bedroom).",
+      "Shows a variety of everyday objects that can be relatable.",
+      "The wooden accent wall adds some visual interest."
+    ],
+    "visual_issues": [
+      "The lighting is somewhat flat and uninspired, lacking depth.",
+      "The composition is a bit haphazard, with elements like the cardboard box and plastic bottles feeling somewhat randomly placed.",
+      "The overall scene lacks a clear focal point, making it difficult to immediately understand the intended narrative.",
+      "The white sheet covering the nightstand is not aesthetically pleasing and detracts from the overall composition."
+    ],
+    "usable_for": [
+      "Establishing shot",
+      "Contextual shot"
+    ],
+    "quality_score_1_to_5": 2,
+    "file_id": "asset_01",
+    "path": "/tmp/linger-output/downloaded_bundle/best_01.jpg",
+    "file_name": "best_01.jpg",
+    "capture_hint": {
+      "moment_label": "Nightstand clutter and bedroom context",
+      "cinematic_role": "room_opportunity",
+      "best_future_use": "This frame can inspire a scene about bedroom organization and decluttering, showing how to repurpose items or create storage solutions.",
+      "score_0_to_100": 75
+    }
+  },
+  {
+    "primary_subject": "Empty plastic water bottles and a cardboard box",
+    "room_context": "Bedroom, next to a nightstand",
+    "best_use_in_story": "This image serves as a proof-of-fit shot, demonstrating the 'before' state of clutter and waste that the reel aims to address. It establishes the problem of excess plastic bottles and packaging.",
+    "visual_strengths": [
+      "Clearly shows the presence of multiple empty plastic bottles.",
+      "Includes a cardboard box, suggesting a broader theme of waste reduction and repurposing.",
+      "The cluttered nightstand provides context for home organization."
+    ],
+    "visual_issues": [
+      "The lighting is somewhat harsh and unflattering.",
+      "The composition is slightly unbalanced, with a large dark area on the left.",
+      "The plastic bottles are somewhat obscured by plastic bags, making their form less distinct.",
+      "The overall scene lacks a strong focal point."
+    ],
+    "usable_for": [
+      "Establishing shot",
+      "Proof-of-fit shot"
+    ],
+    "quality_score_1_to_5": 3,
+    "file_id": "asset_02",
+    "path": "/tmp/linger-output/downloaded_bundle/best_02.jpg",
+    "file_name": "best_02.jpg",
+    "capture_hint": {
+      "moment_label": "Cardboard box and plastic bottles",
+      "cinematic_role": "room_opportunity",
+      "best_future_use": "This frame can inspire a scene about home organization, recycling, or DIY projects using repurposed materials.",
+      "score_0_to_100": 75
+    }
+  },
+  {
+    "primary_subject": "Three large, empty plastic water bottles",
+    "room_context": "Leaning against a white wall, on a wooden floor, near a doorway. There are also some brown paper bags and electrical cords visible.",
+    "best_use_in_story": "Establishing shot, showing the raw material for a reuse/organization project.",
+    "visual_strengths": [
+      "Clear depiction of the primary subject (water bottles)",
+      "Provides context of a domestic space"
+    ],
+    "visual_issues": [
+      "The lighting is harsh and unflattering.",
+      "The composition is somewhat cluttered with the paper bags and cords.",
+      "The bottles are not perfectly clean, with some residue visible.",
+      "The background elements (doorway, floor pattern) are distracting."
+    ],
+    "usable_for": [
+      "Establishing the problem of plastic waste",
+      "Inspiring DIY/upcycling ideas",
+      "Home organization context"
+    ],
+    "quality_score_1_to_5": 2,
+    "file_id": "asset_03",
+    "path": "/tmp/linger-output/downloaded_bundle/hero.jpg",
+    "file_name": "hero.jpg",
+    "capture_hint": {
+      "moment_label": "Hero object",
+      "cinematic_role": "hero_object",
+      "best_future_use": "anchor still",
+      "score_0_to_100": 100
+    }
+  }
+]

@@ -1,0 +1,120 @@
+{
+  "started_at_epoch": 1773670337.6038136,
+  "steps": [
+    {
+      "name": "interpret_best_01.jpg",
+      "latency_sec": 3.647,
+      "model": "gemini-2.5-flash-lite",
+      "input_file": "best_01.jpg",
+      "input_bytes": 128393,
+      "prompt_chars": 2483
+    },
+    {
+      "name": "interpret_best_02.jpg",
+      "latency_sec": 3.155,
+      "model": "gemini-2.5-flash-lite",
+      "input_file": "best_02.jpg",
+      "input_bytes": 96852,
+      "prompt_chars": 2453
+    },
+    {
+      "name": "interpret_hero.jpg",
+      "latency_sec": 4.136,
+      "model": "gemini-2.5-flash-lite",
+      "input_file": "hero.jpg",
+      "input_bytes": 149930,
+      "prompt_chars": 2329
+    },
+    {
+      "name": "brainstorm_ideas",
+      "latency_sec": 21.861,
+      "model": "gemini-2.5-flash",
+      "prompt_chars": 11428,
+      "ideas_count": 5
+    },
+    {
+      "name": "plan_storyboard",
+      "latency_sec": 10.342,
+      "model": "gemini-2.5-flash",
+      "prompt_chars": 14068,
+      "scene_count": 5
+    },
+    {
+      "name": "generate_image_scene_3",
+      "latency_sec": 20.851,
+      "model": "gemini-2.5-flash-image",
+      "status": "generated",
+      "path": "scene_3_2.png",
+      "prompt": "Hands cutting a large plastic water bottle, with other bottles already cut into various shapes for organization. Clean motion-comic style, grounded in real room",
+      "prompt_chars": 183,
+      "reference_files": [
+        "hero.jpg"
+      ],
+      "aspect_ratio": "9:16",
+      "attempt_count": 1
+    },
+    {
+      "name": "generate_image_scene_4",
+      "latency_sec": 14.058,
+      "model": "gemini-2.5-flash-image",
+      "status": "generated",
+      "path": "scene_4_2.png",
+      "prompt": "A beautifully organized nightstand with repurposed plastic bottle organizers holding small items like pens, jewelry, and remote controls. Clean motion-comic sty",
+      "prompt_chars": 223,
+      "reference_files": [
+        "hero.jpg"
+      ],
+      "aspect_ratio": "9:16",
+      "attempt_count": 1
+    },
+    {
+      "name": "generate_image_scene_5",
+      "latency_sec": 14.959,
+      "model": "gemini-2.5-flash-image",
+      "status": "generated",
+      "path": "scene_5_2.png",
+      "prompt": "A close-up of a repurposed plastic bottle organizer on a nightstand, holding a small plant or a few neatly arranged items, with a soft, warm glow. Clean motion-",
+      "prompt_chars": 226,
+      "reference_files": [
+        "hero.jpg"
+      ],
+      "aspect_ratio": "9:16",
+      "attempt_count": 1
+    },
+    {
+      "name": "judge_scene_3",
+      "latency_sec": 2.337,
+      "model": "gemini-2.5-flash-lite",
+      "input_file": "scene_3_2.png",
+      "input_bytes": 1465098
+    },
+    {
+      "name": "judge_scene_4",
+      "latency_sec": 1.931,
+      "model": "gemini-2.5-flash-lite",
+      "input_file": "scene_4_2.png",
+      "input_bytes": 1115020
+    },
+    {
+      "name": "judge_scene_5",
+      "latency_sec": 5.645,
+      "model": "gemini-2.5-flash-lite",
+      "input_file": "scene_5_2.png",
+      "input_bytes": 1338608
+    },
+    {
+      "name": "tts_narration",
+      "latency_sec": 3.019,
+      "voice": "en-US-Chirp3-HD-Charon",
+      "text_chars": 311,
+      "audio_file": "narration.wav"
+    },
+    {
+      "name": "render_video",
+      "latency_sec": 95.597,
+      "output": "/tmp/linger-output/final_story.mp4",
+      "output_bytes": 2310799
+    }
+  ],
+  "finished_at_epoch": 1773670540.1670692
+}
