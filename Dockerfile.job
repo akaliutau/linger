@@ -18,6 +18,7 @@ RUN pip install --no-cache-dir -r requirements.job.txt
 COPY poc_story_video.py ./poc_story_video.py
 COPY run_video_pipeline_job.sh ./run_video_pipeline_job.sh
 COPY upload_dir_to_gcs.py ./upload_dir_to_gcs.py
+COPY brief.txt ./brief.txt
 RUN chmod +x /app/run_video_pipeline_job.sh
 
 ENTRYPOINT ["/app/run_video_pipeline_job.sh"]

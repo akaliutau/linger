@@ -58,6 +58,31 @@ OVERLAY_STOPWORDS = {
     "show", "showing", "make", "makes", "made", "good", "better", "best", "real", "reel",
 }
 
+IMAGE_REQUEST_MIN_INTERVAL_SEC = max(0.0, float(os.getenv("IMAGE_REQUEST_MIN_INTERVAL_SEC", "3.5")))
+IMAGE_REQUEST_JITTER_SEC = max(0.0, float(os.getenv("IMAGE_REQUEST_JITTER_SEC", "0.6")))
+MAX_IMAGE_REFERENCE_IMAGES = max(0, int(os.getenv("MAX_IMAGE_REFERENCE_IMAGES", "1")))
+OVERLAY_SAFE_TOP_PCT = min(0.35, max(0.04, float(os.getenv("OVERLAY_SAFE_TOP_PCT", "0.12"))))
+OVERLAY_SAFE_SIDE_PCT = min(0.20, max(0.03, float(os.getenv("OVERLAY_SAFE_SIDE_PCT", "0.08"))))
+OVERLAY_LANE_GAP_PX = max(28, int(os.getenv("OVERLAY_LANE_GAP_PX", "56")))
+OVERLAY_MAX_LINES = max(1, int(os.getenv("OVERLAY_MAX_LINES", "2")))
+
+_LAST_PACED_REQUEST_AT: Dict[str, float] = {}
+
+
+def pace_requests(bucket: str, *, min_interval_sec: float, jitter_sec: float = 0.0) -> None:
+    if min_interval_sec <= 0 and jitter_sec <= 0:
+        return
+    now = time.monotonic()
+    previous = _LAST_PACED_REQUEST_AT.get(bucket, 0.0)
+    wait_for = max(0.0, min_interval_sec - (now - previous))
+    if wait_for > 0:
+        debug(f"Pacing {bucket} requests for {wait_for:.1f}s to smooth load")
+        time.sleep(wait_for)
+    if jitter_sec > 0:
+        jitter = random.uniform(0.0, jitter_sec)
+        if jitter > 0:
+            time.sleep(jitter)
+    _LAST_PACED_REQUEST_AT[bucket] = time.monotonic()
 
 
 @dataclass
@@ -284,61 +309,112 @@ def choose_overlay_text(scene: Dict[str, Any], story: Dict[str, Any], scene_inde
                 continue
             unique_words.append(word)
             seen.add(word)
-            if len(unique_words) == 3:
+            if len(unique_words) == 4:
                 break
         if len(unique_words) >= 2:
-            overlay = title_case_words(unique_words[:3])
-            if 5 <= len(overlay) <= 24:
+            overlay = title_case_words(unique_words[:4])
+            if 5 <= len(overlay) <= 34:
                 return overlay
     if scene_index == 0:
         title_words = clean_overlay_words(str(story.get("title") or ""))
         if len(title_words) >= 2:
-            return title_case_words(title_words[:3])
+            return title_case_words(title_words[:4])
     return None
 
 
-def build_overlay_image(text: str, max_width: int) -> Image.Image:
-    font_size = max(34, min(64, max_width // 11))
-    font = load_overlay_font(font_size)
-    dummy = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(dummy)
-    bbox = draw.textbbox((0, 0), text, font=font, stroke_width=2)
-    text_w = max(1, bbox[2] - bbox[0])
-    text_h = max(1, bbox[3] - bbox[1])
+def wrap_overlay_text_lines(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.ImageFont,
+    max_text_width: int,
+    max_lines: int,
+) -> List[str]:
+    words = text.split()
+    if not words:
+        return [text]
 
-    pad_x = max(26, font_size // 2)
-    pad_y = max(16, font_size // 3)
+    lines: List[str] = []
+    current: List[str] = []
+    for word in words:
+        candidate_words = [*current, word]
+        candidate = " ".join(candidate_words)
+        bbox = draw.textbbox((0, 0), candidate, font=font, stroke_width=2)
+        candidate_width = max(1, bbox[2] - bbox[0])
+        if current and candidate_width > max_text_width and len(lines) + 1 < max_lines:
+            lines.append(" ".join(current))
+            current = [word]
+        else:
+            current = candidate_words
+    if current:
+        lines.append(" ".join(current))
+
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        if not lines[-1].endswith("…"):
+            lines[-1] = lines[-1].rstrip() + "…"
+    return lines
+
+
+def build_overlay_image(text: str, max_width: int) -> Image.Image:
+    max_width = max(220, max_width)
+    font_size = max(30, min(58, max_width // 10))
+    while True:
+        font = load_overlay_font(font_size)
+        dummy = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(dummy)
+        lines = wrap_overlay_text_lines(draw, text, font, int(max_width * 0.78), OVERLAY_MAX_LINES)
+        boxes = [draw.textbbox((0, 0), line, font=font, stroke_width=2) for line in lines]
+        text_w = max(max(1, box[2] - box[0]) for box in boxes)
+        if text_w <= int(max_width * 0.78) or font_size <= 26:
+            break
+        font_size -= 2
+
+    text_h = sum(max(1, box[3] - box[1]) for box in boxes)
+    line_gap = max(8, font_size // 5) if len(lines) > 1 else 0
+    text_h += line_gap * max(0, len(lines) - 1)
+
+    pad_x = max(22, font_size // 2)
+    pad_y = max(14, font_size // 3)
     radius = max(18, font_size // 2)
 
-    canvas = Image.new("RGBA", (text_w + pad_x * 2, text_h + pad_y * 2), (0, 0, 0, 0))
+    canvas_w = min(max_width, text_w + pad_x * 2)
+    canvas_h = text_h + pad_y * 2
+    canvas = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(canvas)
     draw.rounded_rectangle(
         (0, 0, canvas.width - 1, canvas.height - 1),
         radius=radius,
-        fill=(10, 10, 12, 118),
-        outline=(255, 255, 255, 32),
+        fill=(10, 10, 12, 126),
+        outline=(255, 255, 255, 36),
         width=1,
     )
-    text_origin = (pad_x, pad_y - bbox[1] // 2)
-    draw.text(
-        text_origin,
-        text,
-        font=font,
-        fill=(255, 255, 255, 245),
-        stroke_width=2,
-        stroke_fill=(0, 0, 0, 150),
-    )
+
+    y = pad_y
+    for line, box in zip(lines, boxes):
+        line_w = max(1, box[2] - box[0])
+        x = max(pad_x, (canvas.width - line_w) // 2)
+        draw.text(
+            (x, y - box[1] // 2),
+            line,
+            font=font,
+            fill=(255, 255, 255, 245),
+            stroke_width=2,
+            stroke_fill=(0, 0, 0, 150),
+        )
+        y += max(1, box[3] - box[1]) + line_gap
     return canvas
 
 
 def build_text_overlay_clip(text: str, duration: float, size: Tuple[int, int], lane_index: int = 0) -> Any:
-    overlay_image = build_overlay_image(text, int(size[0] * 0.82))
+    safe_side_margin = int(size[0] * OVERLAY_SAFE_SIDE_PCT)
+    overlay_width = max(220, size[0] - safe_side_margin * 2)
+    overlay_image = build_overlay_image(text, overlay_width)
     clip = ImageClip(np.array(overlay_image)).with_duration(duration)
     fade_in = min(0.22, max(0.08, duration * 0.16))
     fade_out = min(0.24, max(0.10, duration * 0.18))
-    base_y = int(size[1] * 0.72) + lane_index * 48
-    drift = min(18, max(8, int(size[1] * 0.012)))
-    positioned = clip.with_position(lambda t: ("center", base_y - drift * (t / max(duration, 0.01))))
+    safe_y = int(size[1] * OVERLAY_SAFE_TOP_PCT) + lane_index * OVERLAY_LANE_GAP_PX
+    drift = min(10, max(4, int(size[1] * 0.006)))
+    positioned = clip.with_position(lambda t: ("center", safe_y - drift * (t / max(duration, 0.01))))
     return positioned.with_effects([vfx.FadeIn(fade_in), vfx.FadeOut(fade_out)]).with_opacity(0.92)
 
 
@@ -429,6 +505,7 @@ def load_bundle_context(bundle_dir: Path) -> Dict[str, Any]:
         "story_seed": read_json_if_exists(bundle_dir / "story_seed.json"),
         "shot_manifest": read_json_if_exists(bundle_dir / "shot_manifest.json"),
         "session_summary": read_json_if_exists(bundle_dir / "session_summary.json"),
+        "brief_text": read_text(bundle_dir / "brief.txt" if (bundle_dir / "brief.txt").exists() else None),
         "idea_text": read_text(bundle_dir / "idea.txt" if (bundle_dir / "idea.txt").exists() else None),
     }
     context["file_hints"] = build_file_hints(context)
@@ -437,8 +514,13 @@ def load_bundle_context(bundle_dir: Path) -> Dict[str, Any]:
 
 def compose_pipeline_brief(base_brief: str, bundle_context: Dict[str, Any]) -> str:
     parts = []
-    if base_brief:
-        parts.append(base_brief.strip())
+    base_brief_clean = (base_brief or "").strip()
+    if base_brief_clean:
+        parts.append(base_brief_clean)
+
+    bundle_brief_clean = str(bundle_context.get("brief_text") or "").strip()
+    if bundle_brief_clean and bundle_brief_clean != base_brief_clean:
+        parts.append(bundle_brief_clean)
 
     story_seed = bundle_context.get("story_seed") or {}
     if story_seed:
@@ -494,7 +576,9 @@ def prepare_input_bundle(input_ref: str, out_dir: Path, project: Optional[str]) 
 
     bundle_context = load_bundle_context(bundle_dir)
     dump_json(out_dir / "input_source.json", source_info)
-    dump_json(out_dir / "bundle_context.json", {k: v for k, v in bundle_context.items() if k != "idea_text"})
+    dump_json(out_dir / "bundle_context.json", {k: v for k, v in bundle_context.items() if k not in {"idea_text", "brief_text"}})
+    if bundle_context.get("brief_text"):
+        (out_dir / "bundle_brief.txt").write_text(bundle_context["brief_text"], encoding="utf-8")
     if bundle_context.get("idea_text"):
         (out_dir / "bundle_idea.txt").write_text(bundle_context["idea_text"], encoding="utf-8")
     return bundle_dir, bundle_context, source_info
@@ -1020,7 +1104,7 @@ def generate_scene_images(
     reference_images = sorted(
         [a for a in assets if a.kind == "image"],
         key=lambda asset: (asset.cinematic_role != "hero_object", -(asset.score_0_to_100 or 0), asset.file_id),
-    )[:2]
+    )[:MAX_IMAGE_REFERENCE_IMAGES]
     ref_paths = [Path(a.path) for a in reference_images]
     ref_parts = [media_part_from_file(path) for path in ref_paths]
     aspect_ratio = aspect_ratio_for_size(size)
@@ -1101,6 +1185,11 @@ def generate_scene_images(
             }
 
             def _call() -> Any:
+                pace_requests(
+                    "image_generation",
+                    min_interval_sec=IMAGE_REQUEST_MIN_INTERVAL_SEC,
+                    jitter_sec=IMAGE_REQUEST_JITTER_SEC,
+                )
                 return client.models.generate_content(
                     model=model,
                     contents=[effective_prompt, *used_ref_parts],
@@ -1114,9 +1203,9 @@ def generate_scene_images(
                 response = retry_call(
                     _call,
                     op_name=f"generate_image[{scene_id}|refs={ref_count}]",
-                    max_attempts=4 if ref_count > 0 else 3,
-                    initial_delay_sec=2.0 if ref_count > 0 else 1.5,
-                    max_delay_sec=16.0,
+                    max_attempts=3 if ref_count > 0 else 2,
+                    initial_delay_sec=4.0 if ref_count > 0 else 3.0,
+                    max_delay_sec=24.0,
                 )
                 parts = extract_response_parts(response)
                 for index, part in enumerate(parts):
@@ -1556,7 +1645,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--brief-file", help="Optional .txt file with the project or story brief.")
     parser.add_argument("--out-dir", default="output", help="Output directory.")
     parser.add_argument("--project", default=os.getenv("PROJECT_ID"), help="Google Cloud project id.")
-    parser.add_argument("--location", default=os.getenv("REGION", "global"), help="Vertex AI location.")
+    parser.add_argument("--location", default=os.getenv("LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "global", help="Vertex AI location.")
     parser.add_argument("--target-seconds", type=int, default=15, help="Target story duration.")
     parser.add_argument("--fps", type=int, default=24, help="Video fps.")
     parser.add_argument("--size", default="720x1280", help="Output size, e.g. 720x1280 for vertical video.")

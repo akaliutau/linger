@@ -31,6 +31,11 @@ cp "${ROOT_DIR}/requirements.job.txt" "${BUILD_DIR}/"
 cp "${ROOT_DIR}/Dockerfile.job" "${BUILD_DIR}/Dockerfile"
 cp "${ROOT_DIR}/run_video_pipeline_job.sh" "${BUILD_DIR}/"
 cp "${ROOT_DIR}/upload_dir_to_gcs.py" "${BUILD_DIR}/"
+if [[ -f "${ROOT_DIR}/brief.txt" ]]; then
+  cp "${ROOT_DIR}/brief.txt" "${BUILD_DIR}/"
+else
+  : > "${BUILD_DIR}/brief.txt"
+fi
 
 # Optional runtime permissions required by the job.
 gcloud projects add-iam-policy-binding "${PROJECT_ID}" \

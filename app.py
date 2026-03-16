@@ -1136,6 +1136,21 @@ def build_idea_text(story_seed: Dict[str, Any], export_frames: List[Dict[str, An
     lines.append(f"Idea: {story_seed.get('idea') or ''}")
     return "\n".join(lines).strip() + "\n"
 
+def resolve_project_brief_text() -> str:
+    candidates = [
+        BASE_DIR / "brief.txt",
+        Path.cwd() / "brief.txt",
+    ]
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            resolved = candidate
+        if resolved.exists() and resolved.is_file():
+            return resolved.read_text(encoding="utf-8").strip()
+    return ""
+
+
 def basket_dir(session_id: str) -> Path:
     return ensure_dir(export_dir(session_id) / "basket")
 
@@ -1357,6 +1372,8 @@ async def api_tts_guide(payload: GuideTTSRequest) -> Dict[str, Any]:
     except Exception as exc:
         json_log("guide_tts_failed", error=str(exc), text=text[:120])
         raise HTTPException(status_code=500, detail=f"Guide TTS failed: {exc}")
+    if not url:
+        return {"ok": False, "reason": "unavailable", "text": text, "voice": GUIDE_TTS_VOICE_NAME}
     return {"ok": True, "text": text, "url": url, "voice": GUIDE_TTS_VOICE_NAME}
 
 
@@ -1780,6 +1797,7 @@ async def api_session_finalize(request: Request, session_id: str = Form(...), en
     story_seed_path = basket_root / "story_seed.json"
     shot_manifest_path = basket_root / "shot_manifest.json"
     idea_path = basket_root / "idea.txt"
+    brief_path = basket_root / "brief.txt"
 
     hero_export_path: Optional[Path] = None
     stage1_path = Path(state["stage1"]["local_path"])
@@ -1878,6 +1896,9 @@ async def api_session_finalize(request: Request, session_id: str = Form(...), en
         },
     )
     idea_path.write_text(build_idea_text(story_seed, export_frames), encoding="utf-8")
+    project_brief_text = resolve_project_brief_text()
+    if project_brief_text:
+        brief_path.write_text(project_brief_text, encoding="utf-8")
 
     basket_assets.extend(
         item
@@ -1885,6 +1906,7 @@ async def api_session_finalize(request: Request, session_id: str = Form(...), en
             upload_basket_file(session_id, basket_prefix, story_seed_path, {"capture_type": "story_seed"}),
             upload_basket_file(session_id, basket_prefix, shot_manifest_path, {"capture_type": "shot_manifest"}),
             upload_basket_file(session_id, basket_prefix, idea_path, {"capture_type": "idea_text"}),
+            upload_basket_file(session_id, basket_prefix, brief_path, {"capture_type": "brief_text"}) if brief_path.exists() else None,
         ]
         if item is not None
     )
@@ -1903,6 +1925,7 @@ async def api_session_finalize(request: Request, session_id: str = Form(...), en
         "shot_manifest_path": str(shot_manifest_path),
         "story_seed_path": str(story_seed_path),
         "idea_path": str(idea_path),
+        "brief_path": str(brief_path) if brief_path.exists() else None,
         "finalized_at": utc_iso(),
         "storage_mode": STORAGE.mode,
     }
@@ -1936,6 +1959,7 @@ async def api_session_finalize(request: Request, session_id: str = Form(...), en
         "story_seed_path": str(story_seed_path),
         "shot_manifest_path": str(shot_manifest_path),
         "idea_path": str(idea_path),
+        "brief_path": str(brief_path) if brief_path.exists() else None,
         "basket_assets": basket_assets,
         "basket_url": basket_url,
         "basket_root": str(basket_root),
