@@ -41,7 +41,7 @@ uvicorn app:app --reload --host 0.0.0.0 --port 8000
 ### 2) Start the React app
 
 ```bash
-cd linger_react_poc
+cd fe
 npm install
 npm run dev
 ```
@@ -51,19 +51,6 @@ Open:
 ```text
 http://localhost:5173
 ```
-
-## Mobile testing
-
-For **camera access on Android Chrome**, the app must be opened in a **secure context**:
-
-- `https://...`
-- or `localhost`
-
-So for phone testing, use one of these:
-
-- deploy frontend + backend to Cloud Run
-- use an HTTPS tunnel
-- or build the frontend and serve it from the backend behind HTTPS
 
 ## Build for demo / deployment
 
@@ -84,6 +71,8 @@ This frontend tries to use `/api/tts/guide` first.
 
 - if your backend has that route, it will play server-generated guide audio
 - otherwise it falls back to browser speech synthesis
+
+NOTE: we didn't test thoroughly this path and on some phones we observed issues
 
 ## Observability
 

@@ -106,13 +106,13 @@ This ensures the downstream pipeline has stable, high-quality inputs:
 ```
 ## Technical deep dive
 
-### Technologies and models used
+### Key technologies related to story generation:
 
 | Model / Tool             | Action / Output                                      |
 |--------------------------|------------------------------------------------------|
 | `gemini-2.5-flash-lite`  | Interprets the input images.                         |
 | `gemini-2.5-flash`       | Brainstorms 5 story concepts.                        |
-| `gemini-2.5-flash`       | Creates a strict JSON storyboard for **30 seconds**. |
+| `gemini-2.5-flash`       | Creates a strict JSON storyboard for **15 seconds**. |
 | `gemini-2.5-flash-image` | Generates only the missing keyframes.                |
 | `gemini-2.5-flash-lite`  | Judges those generated images for slop / quality.    |
 | Cloud TTS (`Chirp 3 HD`) | Generates narration.                                 |
@@ -139,16 +139,23 @@ Why this matters: the UI is doing more than transport. It actively protects the 
 
 The backend owns session state, AI orchestration, storage, and finalization.
 
-Main responsibilities:
+Major endpoints:
 
-- **Stage 1 hero analysis** via `/api/stage1/analyze-photo`
-- **Harvest initialization** via `/api/live/start`
-- **Per-frame scoring** via `/api/live/frame`
-- **Manual stop / seed refresh** via `/api/live/harvest/stop` and `/api/story/seed`
-- **Light conversational guidance** via `/api/live/chat`
-- **Session inspection** via `/api/session/{session_id}`
-- **Story basket finalization** via `/api/session/finalize`
-- **Share / playback** via the story page and `/api/story/{session_id}/video.mp4`
+| Endpoint(s)                         | Main Responsibility                   |
+|-------------------------------------|---------------------------------------|
+| `/api/stage1/analyze-photo`         | Stage 1 hero analysis                 |
+| `/api/live/start`                   | Harvest initialization                |
+| `/api/live/frame`                   | Per-frame scoring                     |
+| `/api/live/harvest/stop`            | Manual stop / seed refresh            |
+| `/api/story/seed`                   |                                       |
+| `/api/live/chat`                    | Light conversational guidance         |
+| `/api/session/{session_id}`         | Session inspection                    |
+| `/api/session/finalize`             | Story basket finalization             |
+| `/api/story/{session_id}/video.mp4` | Share / playback (via the story page) |
+
+---
+
+Would you like me to add HTTP methods (GET, POST, etc.) or description columns to this table?
 
 Operational details:
 
