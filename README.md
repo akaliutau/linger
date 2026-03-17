@@ -366,6 +366,7 @@ python poc_story_video.py \
 It generates a short 15-sec clip using sample footage we've added in `input/` folder.
 The cloud version is built on the same algorithm.
 
+The `/ouput/result` folder contains the example of generated reel and related materials. The reel can be watched [here](output/result/final_story.mp4)
 ---
 
 ## Project structure
