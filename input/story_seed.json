@@ -1,0 +1,47 @@
+{
+  "session_id": "linger-mvp4o9",
+  "title": "Large plastic water bottles",
+  "description": "These large plastic bottles can be transformed into functional storage, planters, or watering tools.",
+  "idea": "The presence of these empty bottles indicates an opportunity to reduce waste and create useful items for home organization or gardening. Supporting moments: Nightstand clutter and bedroom context, Cardboard box and plastic bottles.",
+  "hook": "The presence of these empty bottles indicates an opportunity to reduce waste and create useful items for home organization or gardening.",
+  "tone": "calm, warm, grounded, inventive",
+  "visual_style": "clean motion-comic grounded in real room photos",
+  "generation_strategy": "hero still + 2-3 complementary support stills, then storyboard JSON and optional single hero clip",
+  "hero_preview_url": "/session_cache/linger-mvp4o9/stage1/stage1_20260316T140832Z.jpg",
+  "hero_image": "hero.jpg",
+  "best_count": 2,
+  "fallback_used": false,
+  "selected_roles": [
+    "room_opportunity",
+    "room_opportunity"
+  ],
+  "selected_frames": [
+    "best_01.jpg",
+    "best_02.jpg"
+  ],
+  "created_at": "2026-03-16T14:10:15.126548+00:00",
+  "selected_frame_items": [
+    {
+      "rank": 1,
+      "file_name": "best_01.jpg",
+      "local_path": "/app/session_cache/linger-mvp4o9/export/basket/best_01.jpg",
+      "moment_label": "Nightstand clutter and bedroom context",
+      "cinematic_role": "room_opportunity",
+      "best_future_use": "This frame can inspire a scene about bedroom organization and decluttering, showing how to repurpose items or create storage solutions.",
+      "score_0_to_100": 75,
+      "preview_url": null,
+      "local_preview_url": "/session_cache/linger-mvp4o9/best_frames/frame_00003_score_075.jpg"
+    },
+    {
+      "rank": 2,
+      "file_name": "best_02.jpg",
+      "local_path": "/app/session_cache/linger-mvp4o9/export/basket/best_02.jpg",
+      "moment_label": "Cardboard box and plastic bottles",
+      "cinematic_role": "room_opportunity",
+      "best_future_use": "This frame can inspire a scene about home organization, recycling, or DIY projects using repurposed materials.",
+      "score_0_to_100": 75,
+      "preview_url": null,
+      "local_preview_url": "/session_cache/linger-mvp4o9/best_frames/frame_00002_score_075.jpg"
+    }
+  ]
+}

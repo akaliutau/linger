@@ -1,0 +1,80 @@
+{
+  "selected_idea_id": 1,
+  "ideas": [
+    {
+      "idea_id": 1,
+      "title": "Nightstand Nook Revival",
+      "one_line_hook": "Transform bedroom clutter into a serene, organized space using repurposed plastic bottles.",
+      "transformation": "Empty plastic bottles are cut and styled into functional, aesthetic organizers for a cluttered nightstand, bringing order and calm to a personal space.",
+      "why_it_is_meaningful": "This idea reduces plastic waste, creates a peaceful and functional personal space, and offers a simple, accessible DIY solution for common household clutter.",
+      "estimated_cost_band": "low",
+      "story_potential_1_to_10": 8,
+      "aesthetic_potential_1_to_10": 7,
+      "feasibility_1_to_10": 9,
+      "best_existing_assets": [
+        "asset_01",
+        "asset_02",
+        "asset_03"
+      ]
+    },
+    {
+      "idea_id": 2,
+      "title": "Craft Corner Clarity",
+      "one_line_hook": "Turn discarded bottles into vibrant, practical storage for art supplies and craft tools, inspiring creativity.",
+      "transformation": "Large plastic bottles are upcycled into colorful, segmented holders for pens, brushes, scissors, and other craft items, tidying a creative workspace.",
+      "why_it_is_meaningful": "This project encourages creativity, significantly reduces plastic waste, and makes a creative workspace more inviting and functional, fostering a sense of accomplishment.",
+      "estimated_cost_band": "low",
+      "story_potential_1_to_10": 7,
+      "aesthetic_potential_1_to_10": 8,
+      "feasibility_1_to_10": 8,
+      "best_existing_assets": [
+        "asset_02",
+        "asset_03"
+      ]
+    },
+    {
+      "idea_id": 3,
+      "title": "Pantry & Cabinet Harmony",
+      "one_line_hook": "Bring order to chaotic kitchen cabinets and pantries by repurposing plastic bottles for dry goods and small item storage.",
+      "transformation": "Large plastic bottles are cleaned, cut, and labeled to store dry foods (like pasta, rice, or snacks) or small kitchen gadgets, creating a neat and accessible pantry.",
+      "why_it_is_meaningful": "This solution improves kitchen efficiency, helps reduce food waste by making items visible and organized, and effectively upcycles plastic into practical household tools.",
+      "estimated_cost_band": "low",
+      "story_potential_1_to_10": 6,
+      "aesthetic_potential_1_to_10": 6,
+      "feasibility_1_to_10": 7,
+      "best_existing_assets": [
+        "asset_02",
+        "asset_03"
+      ]
+    },
+    {
+      "idea_id": 4,
+      "title": "Garden Starter Sanctuary",
+      "one_line_hook": "Give new life to plastic bottles by transforming them into mini greenhouses for starting seeds or nurturing small plants.",
+      "transformation": "Plastic bottles are cut to create self-watering planters or protective cloches for seedlings, fostering new growth and sustainable gardening practices.",
+      "why_it_is_meaningful": "This idea promotes sustainable gardening, significantly reduces plastic waste, and connects people with nature through a simple, rewarding DIY project.",
+      "estimated_cost_band": "low",
+      "story_potential_1_to_10": 7,
+      "aesthetic_potential_1_to_10": 7,
+      "feasibility_1_to_10": 7,
+      "best_existing_assets": [
+        "asset_03"
+      ]
+    },
+    {
+      "idea_id": 5,
+      "title": "Tool & Hardware Haven",
+      "one_line_hook": "Organize your workshop or utility drawer with custom storage solutions made from large plastic bottles.",
+      "transformation": "Plastic bottles are cut into various sizes and shapes to sort screws, nails, washers, small tools, or other hardware, bringing order to a cluttered workbench or drawer.",
+      "why_it_is_meaningful": "This practical solution increases efficiency in DIY projects, prevents lost items, and effectively upcycles plastic waste into durable, custom-fit storage.",
+      "estimated_cost_band": "low",
+      "story_potential_1_to_10": 6,
+      "aesthetic_potential_1_to_10": 6,
+      "feasibility_1_to_10": 8,
+      "best_existing_assets": [
+        "asset_02",
+        "asset_03"
+      ]
+    }
+  ]
+}

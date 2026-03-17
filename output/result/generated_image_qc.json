@@ -1,0 +1,47 @@
+[
+  {
+    "meaningful": true,
+    "aesthetically_ok": true,
+    "artifact_free_score_1_to_10": 9,
+    "prompt_alignment_score_1_to_10": 9,
+    "notes": [
+      "The image clearly depicts the process of repurposing plastic bottles.",
+      "The style is consistent with motion-comic and the lighting is warm.",
+      "The composition is clear and the subject is well-defined.",
+      "There are no gibberish texts or ugly artifacts.",
+      "The prompt alignment is high, with hands cutting a bottle and other cut bottles visible."
+    ],
+    "scene_id": "scene_3",
+    "path": "/tmp/linger-output/generated_images/scene_3_2.png"
+  },
+  {
+    "meaningful": true,
+    "aesthetically_ok": true,
+    "artifact_free_score_1_to_10": 9,
+    "prompt_alignment_score_1_to_10": 9,
+    "notes": [
+      "The image successfully depicts the organized nightstand with repurposed bottles.",
+      "The motion-comic style is well-executed, and the atmosphere is warm and inviting.",
+      "The composition is clear and focused on the subject.",
+      "There are no significant artifacts or gibberish text."
+    ],
+    "scene_id": "scene_4",
+    "path": "/tmp/linger-output/generated_images/scene_4_2.png"
+  },
+  {
+    "meaningful": true,
+    "aesthetically_ok": true,
+    "artifact_free_score_1_to_10": 9,
+    "prompt_alignment_score_1_to_10": 8,
+    "notes": [
+      "The image successfully captures the essence of repurposing plastic bottles into organizers.",
+      "The composition is clean and the lighting is soft and warm, creating a peaceful atmosphere.",
+      "The subject is clear and well-defined.",
+      "The style is close to a motion-comic style, grounded in real room photos.",
+      "The prompt requested a close-up, and this image is a medium shot, which could be improved.",
+      "The prompt also mentioned a small plant or neatly arranged items, and the image shows both, which is good."
+    ],
+    "scene_id": "scene_5",
+    "path": "/tmp/linger-output/generated_images/scene_5_2.png"
+  }
+]

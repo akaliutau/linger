@@ -1,0 +1,59 @@
+[
+  {
+    "scene_id": "scene_3",
+    "status": "generated",
+    "path": "/tmp/linger-output/generated_images/scene_3_2.png",
+    "attempts": [
+      {
+        "ref_count": 1,
+        "ref_files": [
+          "hero.jpg"
+        ],
+        "status": "ok",
+        "path": "scene_3_2.png"
+      }
+    ],
+    "used_ref_count": 1,
+    "used_ref_files": [
+      "hero.jpg"
+    ]
+  },
+  {
+    "scene_id": "scene_4",
+    "status": "generated",
+    "path": "/tmp/linger-output/generated_images/scene_4_2.png",
+    "attempts": [
+      {
+        "ref_count": 1,
+        "ref_files": [
+          "hero.jpg"
+        ],
+        "status": "ok",
+        "path": "scene_4_2.png"
+      }
+    ],
+    "used_ref_count": 1,
+    "used_ref_files": [
+      "hero.jpg"
+    ]
+  },
+  {
+    "scene_id": "scene_5",
+    "status": "generated",
+    "path": "/tmp/linger-output/generated_images/scene_5_2.png",
+    "attempts": [
+      {
+        "ref_count": 1,
+        "ref_files": [
+          "hero.jpg"
+        ],
+        "status": "ok",
+        "path": "scene_5_2.png"
+      }
+    ],
+    "used_ref_count": 1,
+    "used_ref_files": [
+      "hero.jpg"
+    ]
+  }
+]
