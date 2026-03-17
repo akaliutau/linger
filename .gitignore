@@ -213,6 +213,6 @@ utils/printer.py
 */node_modules/
 session_cache/
 local_uploads/
-#input/
-#output/
+input/
+output/
 
