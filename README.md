@@ -323,6 +323,7 @@ scripts/deploy_infra.sh
 scripts/deploy_backend_cloud_run.sh
 scripts/deploy_video_job.sh
 ```
+The URL of deployed application will be printed in console. That's all - the app is available immediately. 
 
 ## Local test runs
 
