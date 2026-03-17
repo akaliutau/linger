@@ -60,7 +60,8 @@ There are two conceptual intelligence layers:
 ![Scout pipeline architecture](./docs/scout-pipeline.png)
 [Open full-size diagram](./docs/scout-pipeline.png)
 
-A mobile-first PWA for two-stage multimodal capture. This smart app interprets the hero frame, scores later stop-shots, and gives very short guidance. 
+A mobile-first PWA for two-stage multimodal capture. This smart app interprets the hero frame, scores later stop-shots 
+fromn the video streem, and gives very short guidance (the latter part is experimental at the moment). 
 It acts like a cinematography coach, not just an object detector.
 * **Frontend:** React app, mobile-first camera UI, uses browser `getUserMedia` APIs, and sends blobs to the backend.
 * **Backend:** FastAPI app that owns session state, calls Gemini models via Google GenAI SDK, and provides frame scoring.
@@ -88,7 +89,7 @@ Core files:
 - `idea.txt` / `brief.txt` — optional operator and brief context.
 - `hero.jpg`, `best_01.jpg`, `best_02.jpg`, ... — grounded visual inputs.
 
-Example shape:
+Example shapes (real jsons contain more technical fields):
 
 // story_seed.json
 ```json
@@ -145,7 +146,8 @@ Key technical details:
 - Includes a built-in **Debug Drawer** for state, config, and recent event inspection.
 - Falls back to browser speech synthesis if server-side guide TTS is unavailable.
 
-Why this matters: the UI is doing more than transport. It actively protects the feel of the experience by keeping the camera live, the feedback fast, and the network load bounded.
+Why this matters: the UI is doing more than transport. 
+It actively protects the feel of the experience by keeping the camera live, the feedback fast, and the network load bounded.
 
 ### Backend: FastAPI live capture service
 
@@ -166,8 +168,6 @@ Major endpoints:
 | `/api/story/{session_id}/video.mp4` | Share / playback (via the story page) |
 
 ---
-
-Would you like me to add HTTP methods (GET, POST, etc.) or description columns to this table?
 
 Operational details:
 
