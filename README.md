@@ -411,7 +411,7 @@ During development, we discovered that generating a full 30-second AI video from
 and prone to hallucinations. We learned that the "cheapest viable output" that still feels deeply magical is a 
 **motion-comic / visual story** built from the user's *actual* real-world stills. 
 
-By combining these authentic captures with light motion, rich Cloud TTS narration, and only a small amount of premium AI 
+By combining these authentic captures with light motion (also known as [Ken Burns-style movement](https://en.wikipedia.org/wiki/Ken_Burns_effect)), rich Cloud TTS narration, and only a small amount of premium AI 
 video generation, the output feels incredibly grounded and personal, and greatly suits the environment-context.
 
 ## What makes Linger different
