@@ -15,11 +15,7 @@ scans the surrounding room for real constraints and opportunities, and turns tha
 
 The core product thesis is simple:
 
-> Reuse becomes more compelling when AI behaves less like a chatbot and more like a creative director.
-
-
-Instead of a text-box chat, Linger acts as your real-time spatial creative director. It "sees" an object you are about to discard, 
-scans your room for inspiration, and generates a compelling second-life concept in the form of a 15-30 second mixed-media video reel.
+> Idea becomes more compelling when AI behaves less like a chatbot and more like a creative director.
 
 ---
 
