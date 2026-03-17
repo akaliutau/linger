@@ -13,6 +13,8 @@
 Instead of starting from an empty prompt box, Linger starts from the **camera**: it studies a real object, 
 scans the surrounding room for real constraints and opportunities, and turns that evidence into a short, grounded 15–30 second story reel.
 
+📹 See the demo [here](https://youtu.be/-uAhDVHvi1Y)
+
 The core product thesis is simple:
 
 > Idea becomes more compelling when AI behaves less like a chatbot and more like a creative director.
